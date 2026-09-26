@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Crypto Conte",
   "short_name": "Crypto Conte",
-  "description": "Sala controllo personale per portafoglio crypto, trend, radar e diario operazioni.",
+  "description": "Sala controllo personale per portafoglio crypto, trend live, Radar Opportunità e diario operazioni.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -1,0 +1,46 @@
+CRYPTO CONTE RC2 — TEST RAPIDO
+
+Prima del test, se hai già inserito operazioni nella RC1:
+Diario > Esporta backup.
+
+1. AGGIORNAMENTO
+- Verifica in alto: SALA CONTROLLO · RC2.
+- Premi ↻ una volta.
+- Controlla che lo stato mostri "live · auto 2m30s" e l'ora.
+
+2. AUTO-REFRESH
+- Lascia l'app aperta qualche minuto.
+- Controlla che l'orario "aggiornato" cambi senza premere ↻.
+- Metti l'app in background per almeno un minuto e poi rientra: deve provare ad aggiornare.
+
+3. WATCHLIST
+- Radar > + Watchlist.
+- Cerca "MEW".
+- Aggiungi "MEW · cat in a dogs world".
+- Verifica che compaia ne "Il tuo Radar" e che si possa rimuovere.
+
+4. RADAR OPPORTUNITÀ
+- Apri Radar.
+- Attendi la scansione automatica o premi "Scansiona".
+- Verifica che compaiano al massimo 5 candidati con OSSERVA / INTERESSANTE / NON INSEGUIRE e il motivo.
+- Se non ci sono segnali puliti, è corretto che la lista resti vuota.
+
+5. COSA SAREBBE SUCCESSO?
+- Dopo una scansione con candidati OSSERVA/INTERESSANTE, controlla che appaia uno storico segnali.
+- 24h/48h resteranno "in attesa" finché non passa il tempo richiesto.
+
+6. POSIZIONE
+- Apri una crypto posseduta.
+- Verifica grafici e dati.
+- Verifica i pulsanti "+ Acquisto" e "Vendi tutto".
+- NON salvare una vendita di prova se non vuoi modificare davvero i conti.
+
+7. BACKUP
+- Diario > Esporta backup.
+- Controlla che ci sia anche "Ripristina ultimo punto".
+
+Se trovi un problema, annota in chat:
+- schermata;
+- cosa hai premuto;
+- cosa ti aspettavi;
+- cosa è successo.

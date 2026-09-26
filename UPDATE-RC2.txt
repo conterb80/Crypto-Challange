@@ -1,0 +1,12 @@
+AGGIORNAMENTO DA RC1 A RC2
+
+La RC2 conserva i dati RC1 perché usa lo stesso localStorage sullo stesso indirizzo GitHub Pages.
+Per sicurezza: prima di caricare i nuovi file, apri RC1 > Diario > Esporta backup.
+
+Poi sostituisci TUTTI i file del repository con quelli del pacchetto RC2.
+Dopo il deploy:
+1) apri il sito in Chrome;
+2) premi ↻;
+3) chiudi completamente la PWA;
+4) riaprila;
+5) controlla la scritta "SALA CONTROLLO · RC2".

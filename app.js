@@ -1,9 +1,13 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.1.0';
+  const VERSION = '2.2.0';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 90 * 1000;
+  const AUTO_REFRESH_MS = 150 * 1000;
+  const OPPORTUNITY_TTL = 15 * 60 * 1000;
+  const SAFETY_KEY = 'cryptoConte.v2.safety';
+  const STABLE_SYMBOLS = new Set(['USDT','USDC','DAI','FDUSD','USDE','USDS','PYUSD','TUSD','USDD','FRAX','EURC','EURT','RLUSD']);
   const NOW_ISO_LOCAL = () => {
     const d = new Date();
     const z = n => String(n).padStart(2,'0');
@@ -30,7 +34,8 @@
     {symbol:'APT',name:'Aptos',id:'aptos'},
     {symbol:'ARB',name:'Arbitrum',id:'arbitrum'},
     {symbol:'OP',name:'Optimism',id:'optimism'},
-    {symbol:'TON',name:'Toncoin',id:'the-open-network'}
+    {symbol:'TON',name:'Toncoin',id:'the-open-network'},
+    {symbol:'MEW',name:'cat in a dogs world',id:'cat-in-a-dogs-world'}
   ];
 
   const BASELINE = {
@@ -72,10 +77,12 @@
   const defaultState = () => ({
     version: VERSION,
     watchlist: [],
+    watchlistIds: [],
     ops: [],
     notes: [],
     customAssets: [],
     marketCache: {time:0,data:{...BASELINE.seedMarket}},
+    opportunity: {time:0,candidates:[],prev:{},signals:[],trending:[]},
     ui: {lastView:'home'}
   });
 
@@ -84,6 +91,9 @@
   let currentSheetAsset = null;
   let currentRange = '7d';
   let renderTimer = null;
+  let watchSearchTimer = null;
+  let marketRefreshInFlight = false;
+  let opportunityScanInFlight = false;
 
   const $ = s => document.querySelector(s);
   const $$ = s => [...document.querySelectorAll(s)];
@@ -96,11 +106,28 @@
     try{
       const raw = localStorage.getItem(STORAGE_KEY);
       if(!raw) return defaultState();
-      const s = JSON.parse(raw);
-      return {...defaultState(),...s,ui:{...defaultState().ui,...(s.ui||{})},marketCache:s.marketCache||defaultState().marketCache};
+      const saved = JSON.parse(raw);
+      const base = defaultState();
+      const merged = {...base,...saved,ui:{...base.ui,...(saved.ui||{})},marketCache:saved.marketCache||base.marketCache,opportunity:{...base.opportunity,...(saved.opportunity||{})}};
+      if(!Array.isArray(saved.watchlistIds)){
+        merged.watchlistIds=(saved.watchlist||[]).map(sym=>CATALOG.find(a=>a.symbol===String(sym).toUpperCase())?.id).filter(Boolean);
+      }
+      if(!Array.isArray(merged.opportunity.candidates)) merged.opportunity.candidates=[];
+      if(!Array.isArray(merged.opportunity.signals)) merged.opportunity.signals=[];
+      if(!merged.opportunity.prev || typeof merged.opportunity.prev!=='object') merged.opportunity.prev={};
+      return merged;
     }catch(_){ return defaultState(); }
   }
   function saveState(){ state.version = VERSION; localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  function checkpointState(label='Modifica dati'){
+    try{ localStorage.setItem(SAFETY_KEY,JSON.stringify({time:Date.now(),label,state:JSON.parse(JSON.stringify(state))})); }catch(_){ }
+  }
+  function getCheckpoint(){ try{return JSON.parse(localStorage.getItem(SAFETY_KEY)||'null');}catch(_){return null;} }
+  function restoreCheckpoint(){
+    const cp=getCheckpoint(); if(!cp?.state){toast('Nessun punto sicurezza disponibile');return;}
+    if(!confirm(`Ripristinare il punto sicurezza “${cp.label||'salvataggio'}”?`)) return;
+    state={...defaultState(),...cp.state,opportunity:{...defaultState().opportunity,...(cp.state.opportunity||{})}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll(); refreshMarket(true); toast('Punto sicurezza ripristinato');
+  }
 
   function allAssets(){
     const map = new Map();
@@ -108,6 +135,9 @@
     return [...map.values()];
   }
   function assetBySymbol(symbol){ return allAssets().find(a=>a.symbol===String(symbol).toUpperCase()) || null; }
+  function assetById(id){ return allAssets().find(a=>a.id===id) || (state.opportunity?.candidates||[]).find(a=>a.id===id) || null; }
+  function watchAssets(){ return (state.watchlistIds||[]).map(assetById).filter(Boolean); }
+  function isWatched(a){ return !!a && (state.watchlistIds||[]).includes(a.id); }
 
   function replay(){
     const positions = BASELINE.positions.map(p=>({...p}));
@@ -220,6 +250,73 @@
     return `${owned?'Posizione posseduta':'Watchlist'} · ${bits.length?bits.join(' · '):'dati trend in aggiornamento'}.`;
   }
 
+
+  function candidateTone(status){ return status==='INTERESSANTE'?'good':status==='NON INSEGUIRE'?'warn':''; }
+  function pctChange(from,to){ return from>0&&Number.isFinite(to)?(to/from-1)*100:null; }
+  function analyzeOpportunity(x,btc,prev,trendingIds){
+    const h=num(x.price_change_percentage_1h_in_currency),d=num(x.price_change_percentage_24h_in_currency),w=num(x.price_change_percentage_7d_in_currency);
+    const bd=num(btc?.price_change_percentage_24h_in_currency),bw=num(btc?.price_change_percentage_7d_in_currency);
+    const rel24=d-bd, rel7=w-bw, vol=num(x.total_volume),cap=num(x.market_cap),volRatio=cap>0?vol/cap:0;
+    const volDelta=prev?.volume>0?(vol/prev.volume-1)*100:null;
+    const spark=(x.sparkline_in_7d?.price||[]).filter(Number.isFinite), last24=spark.slice(-24), prior24=spark.slice(-48,-24);
+    const avg=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0, rangePct=a=>{const av=avg(a);return av?((Math.max(...a)-Math.min(...a))/av*100):99;};
+    const range24=last24.length>8?rangePct(last24):99, max24=last24.length?Math.max(...last24):num(x.high_24h), priorHigh=prior24.length?Math.max(...prior24):0;
+    const nearHigh=max24>0&&num(x.current_price)>=max24*.985, compressed=range24<=5.5;
+    const breakout=priorHigh>0&&num(x.current_price)>priorHigh*1.003&&d>0;
+    const trending=trendingIds.has(x.id);
+    const overextended=h>=4.5||d>=14||(d>=10&&nearHigh&&!compressed);
+    let score=0;
+    if(volRatio>=.22) score+=2; else if(volRatio>=.10) score+=1;
+    if(volDelta!=null&&volDelta>=12) score+=2; else if(volDelta!=null&&volDelta>=6) score+=1;
+    if(h>=.35&&h<=3.5) score+=1;
+    if(d>=2&&d<=10) score+=2; else if(d>0&&d<2) score+=1;
+    if(rel24>=2.5) score+=2; else if(rel24>=1) score+=1;
+    if(rel7>=4) score+=1;
+    if(compressed&&nearHigh) score+=2;
+    if(breakout) score+=2;
+    if(trending) score+=1;
+    if(d<=-5||rel24<=-4) score-=2;
+    let status=null;
+    if(overextended&&(d>=8||h>=4.5)) status='NON INSEGUIRE';
+    else if(score>=6&&d>0&&rel24>0) status='INTERESSANTE';
+    else if(score>=3) status='OSSERVA';
+    if(!status) return null;
+    const reasons=[];
+    if(volDelta!=null&&volDelta>=10) reasons.push(`volume in aumento ${fmtPct(volDelta)}`); else if(volRatio>=.18) reasons.push('volume molto attivo');
+    if(d>=2&&d<=10) reasons.push(`momentum 24h ${fmtPct(d)}`);
+    if(rel24>=1.5) reasons.push(`forza vs BTC ${fmtPct(rel24)}`);
+    if(compressed&&nearHigh) reasons.push('compressione vicino ai massimi 24h');
+    else if(breakout) reasons.push('tentativo di breakout');
+    if(trending) reasons.push('interesse CoinGecko in aumento');
+    if(overextended) reasons.unshift('movimento già molto esteso');
+    return {...x,symbol:String(x.symbol||'').toUpperCase(),status,tone:candidateTone(status),score,reason:reasons.slice(0,4).join(' · ')||'movimento da osservare',rel24,rel7,volRatio,volDelta,range24,nearHigh,breakout,trending};
+  }
+
+  function updateSignalOutcomes(rows){
+    const map=new Map((rows||[]).map(x=>[x.id,x]));
+    const now=Date.now(); let changed=false;
+    (state.opportunity.signals||[]).forEach(sig=>{
+      const x=map.get(sig.id)||market[sig.id]; if(!x||!num(x.current_price)) return;
+      const hours=(now-num(sig.time))/3600000;
+      if(hours>=24&&!sig.outcome24){ sig.outcome24={time:now,hours,price:num(x.current_price),pct:pctChange(sig.price,num(x.current_price))}; changed=true; }
+      if(hours>=48&&!sig.outcome48){ sig.outcome48={time:now,hours,price:num(x.current_price),pct:pctChange(sig.price,num(x.current_price))}; changed=true; }
+    });
+    if(changed) state.opportunity.signals=state.opportunity.signals.slice(-30);
+  }
+  function recordOpportunitySignals(candidates){
+    const now=Date.now(); const signals=state.opportunity.signals||[];
+    candidates.filter(c=>c.status==='INTERESSANTE'||c.status==='OSSERVA').forEach(c=>{
+      const last=[...signals].reverse().find(s=>s.id===c.id);
+      if(last&&now-num(last.time)<24*3600000) return;
+      signals.push({signalId:`sig-${now}-${c.id}`,id:c.id,symbol:c.symbol,name:c.name,time:now,price:num(c.current_price),status:c.status,reason:c.reason,outcome24:null,outcome48:null});
+    });
+    state.opportunity.signals=signals.slice(-30);
+  }
+  function signalOutcomeLabel(o,label){
+    if(!o) return `<span class="pending">${label}: in attesa</span>`;
+    return `<span class="${cls(num(o.pct))}">${label}: ${fmtPct(o.pct)}</span>`;
+  }
+
   function portfolioSnapshot(){
     const r=replay();
     const basePos=r.positions.filter(p=>p.account==='base');
@@ -282,15 +379,39 @@
   function renderRadar(){
     const s=portfolioSnapshot();
     const ownedSymbols=new Set(s.positions.map(p=>p.symbol));
-    const base=[assetBySymbol('BTC'),assetBySymbol('ETH'),...s.positions.map(p=>assetBySymbol(p.symbol)||p),...(state.watchlist||[]).map(assetBySymbol)].filter(Boolean);
-    const map=new Map(); base.forEach(a=>map.set(a.symbol,a));
+    const base=[assetBySymbol('BTC'),assetBySymbol('ETH'),...s.positions.map(p=>assetBySymbol(p.symbol)||p),...watchAssets()].filter(Boolean);
+    const map=new Map(); base.forEach(a=>map.set(a.id||a.symbol,a));
     const items=[...map.values()];
+    const opp=state.opportunity||defaultState().opportunity;
+    const scanTime=opp.time?fmtDate(opp.time):'mai';
+    const signals=[...(opp.signals||[])].sort((a,b)=>b.time-a.time).slice(0,8);
     $('#view-radar').innerHTML=`
-      <div class="section-title"><div><h2>Radar Mercato</h2><p>BTC/ETH, tue posizioni e fino a 3 crypto in watchlist</p></div><div class="right"><button class="chip-btn" data-action="add-watch">＋ Watchlist</button></div></div>
+      <div class="section-title"><div><h2>Radar Opportunità</h2><p>Scansione automatica del mercato ogni 15 minuti · ultimo scan ${scanTime}</p></div><div class="right"><button class="chip-btn" data-action="scan-opportunities">◎ Scansiona</button></div></div>
+      <div class="radar-explain"><b>Cosa cerca:</b> volume, momentum, forza rispetto a BTC, compressione/breakout e interesse di mercato. Mostra pochi candidati per capire <i>perché</i> meritano attenzione, non ordini di acquisto.</div>
+      <div class="opportunity-list">${(opp.candidates||[]).length?(opp.candidates||[]).map(c=>{
+        const owned=ownedSymbols.has(c.symbol), watched=isWatched(c);
+        return `<article class="opportunity-card" data-open-asset="${esc(c.symbol)}">
+          <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${owned?'GIÀ IN PORTAFOGLIO':watched?'GIÀ IN WATCHLIST':'SCANSIONE AUTOMATICA'}</div></div><span class="status-pill ${c.tone||candidateTone(c.status)}">${esc(c.status)}</span></div>
+          <div class="radar-grid">
+            <div class="metric"><span>Prezzo</span><b>${fmtPrice(num(c.current_price))}</b></div>
+            <div class="metric"><span>1h</span><b class="${cls(num(c.price_change_percentage_1h_in_currency))}">${fmtPct(c.price_change_percentage_1h_in_currency)}</b></div>
+            <div class="metric"><span>24h</span><b class="${cls(num(c.price_change_percentage_24h_in_currency))}">${fmtPct(c.price_change_percentage_24h_in_currency)}</b></div>
+            <div class="metric"><span>vs BTC 24h</span><b class="${cls(num(c.rel24))}">${fmtPct(c.rel24)}</b></div>
+          </div>
+          <div class="spark">${sparkSVG(c.sparkline_in_7d?.price)}</div>
+          <div class="radar-reason"><b>Perché lo sto guardando:</b> ${esc(c.reason)}</div>
+          ${!owned&&!watched?`<div class="opportunity-actions"><button data-watch-candidate="${esc(c.id)}">＋ Aggiungi alla watchlist</button></div>`:''}
+        </article>`;
+      }).join(''):'<div class="empty">Il Radar Opportunità non ha ancora completato una scansione, oppure non trova segnali abbastanza puliti. La scansione parte automaticamente.</div>'}</div>
+
+      <div class="section-title"><div><h2>Cosa sarebbe successo?</h2><p>Segnali salvati senza dover comprare: confronto alla prima rilevazione dopo 24h e 48h</p></div></div>
+      <div class="signal-list">${signals.length?signals.map(sig=>`<article class="signal-card" data-open-asset="${esc(sig.symbol)}"><div class="signal-top"><div><b>${esc(sig.symbol)} · ${esc(sig.status)}</b><small>${fmtDate(sig.time)} · prezzo segnale ${fmtPrice(num(sig.price))}</small></div></div><div class="signal-outcomes">${signalOutcomeLabel(sig.outcome24,'24h')} · ${signalOutcomeLabel(sig.outcome48,'48h')}</div><div class="radar-reason">${esc(sig.reason)}</div></article>`).join(''):'<div class="empty">Quando il Radar troverà un candidato OSSERVA o INTERESSANTE, salverà qui prezzo e ora per misurare il metodo senza rischiare denaro.</div>'}</div>
+
+      <div class="section-title"><div><h2>Il tuo Radar</h2><p>BTC/ETH, posizioni e watchlist libera</p></div><div class="right"><button class="chip-btn" data-action="add-watch">＋ Watchlist</button></div></div>
       <div class="radar-list">${items.map(a=>{
-        const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; const st=radarStatus(m); const owned=ownedSymbols.has(a.symbol); const watched=(state.watchlist||[]).includes(a.symbol);
+        const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; const st=radarStatus(m); const owned=ownedSymbols.has(a.symbol); const watched=isWatched(a);
         return `<article class="radar-card" data-open-asset="${esc(a.symbol)}">
-          <div class="radar-top"><div><div class="radar-title">${esc(a.symbol)} · ${esc(a.name)}</div><div class="radar-sub">${owned?'POSIZIONE':a.symbol==='BTC'||a.symbol==='ETH'?'MERCATO GUIDA':'WATCHLIST'}</div></div><div><span class="status-pill ${st.tone}">${st.label}</span>${watched?`<button class="watch-remove" data-remove-watch="${esc(a.symbol)}">rimuovi</button>`:''}</div></div>
+          <div class="radar-top"><div><div class="radar-title">${esc(a.symbol)} · ${esc(a.name)}</div><div class="radar-sub">${owned?'POSIZIONE':a.symbol==='BTC'||a.symbol==='ETH'?'MERCATO GUIDA':'WATCHLIST'}</div></div><div><span class="status-pill ${st.tone}">${st.label}</span>${watched?`<button class="watch-remove" data-remove-watch-id="${esc(a.id)}">rimuovi</button>`:''}</div></div>
           <div class="radar-grid">
             <div class="metric"><span>Prezzo</span><b>${fmtPrice(num(m.current_price))}</b></div>
             <div class="metric"><span>1h</span><b class="${cls(num(m.price_change_percentage_1h_in_currency))}">${fmtPct(m.price_change_percentage_1h_in_currency)}</b></div>
@@ -344,7 +465,10 @@
     ['Volume','Il volume indica quanto valore è stato scambiato. Un movimento di prezzo accompagnato da volume elevato è diverso da un movimento con scambi ridotti.'],
     ['Liquidità','Quando vendi una crypto, il denaro torna liquidità nel conto Base o Test. Solo quando registri un nuovo acquisto quella liquidità viene nuovamente investita.'],
     ['Commissioni','Anche pochi centesimi cambiano il risultato reale. Inserirle quando sono note evita di sovrastimare il profitto.'],
-    ['Radar, non ordini','Gli stati del Radar descrivono forza e direzione dei movimenti. Non sono ordini automatici di acquisto o vendita: servono per capire dove guardare.']
+    ['Radar, non ordini','Gli stati del Radar descrivono forza e direzione dei movimenti. Non sono ordini automatici di acquisto o vendita: servono per capire dove guardare.'],
+    ['Forza relativa vs BTC','Confronta il movimento di una crypto con Bitcoin. Se fa +5% mentre BTC fa +1%, la forza relativa sulle 24h è circa +4 punti percentuali.'],
+    ['NON INSEGUIRE','Segnala un movimento già molto esteso. Non significa che la crypto debba scendere: ricorda semplicemente di non confondere una forte corsa già avvenuta con un segnale iniziale.'],
+    ['Cosa sarebbe successo?','Salvare un segnale senza comprare permette di confrontare il prezzo dopo 24h e 48h e capire se il metodo sta davvero individuando movimenti interessanti.']
   ];
   function renderSchool(){
     $('#view-school').innerHTML=`
@@ -364,7 +488,7 @@
       <div class="section-title"><div><h2>Risultati realizzati</h2><p>Dalle operazioni registrate dopo questo aggiornamento</p></div></div>
       <div class="closed-list">${realizedEntries.length?realizedEntries.map(([sym,v])=>`<article class="closed-card"><div class="closed-top"><div><div class="closed-title">${esc(sym)}</div><div class="closed-sub">P/L realizzato</div></div><div class="${cls(v)}" style="font-size:18px;font-weight:900">${fmtEUR(v)}</div></div></article>`).join(''):'<div class="empty">Nessun profitto o perdita realizzato registrato dalla RC1.</div>'}</div>
 
-      <div class="settings-card"><h3>Backup e sicurezza dati</h3><p class="muted small">I dati manuali restano sul dispositivo. Esporta un backup JSON prima di prove importanti o cambi telefono.</p><div class="settings-actions"><button class="chip-btn" data-action="export">Esporta backup</button><button class="chip-btn" data-action="restore">Importa backup</button><button class="danger-btn" data-action="reset">Ripristina RC1</button></div></div>
+      <div class="settings-card"><h3>Backup e sicurezza dati</h3><p class="muted small">I dati manuali restano sul dispositivo. RC2 crea anche un punto sicurezza locale prima delle modifiche importanti.</p><div class="settings-actions"><button class="chip-btn" data-action="export">Esporta backup</button><button class="chip-btn" data-action="restore">Importa backup</button><button class="chip-btn" data-action="restore-safety">Ripristina ultimo punto</button><button class="danger-btn" data-action="reset">Ripristina RC2</button></div></div>
       <div class="settings-card"><h3>Contabilità</h3><div class="cash-details"><div class="cash-mini"><span>Capitale personale</span><b>${fmtEUR(s.ownDeposits)}</b></div><div class="cash-mini"><span>Reward accumulati</span><b>${fmtEUR(s.rewardDeposits)}</b></div><div class="cash-mini"><span>Prelievi registrati</span><b>${fmtEUR(s.withdrawals)}</b></div><div class="cash-mini"><span>Risultato reale</span><b class="${cls(s.result)}">${fmtEUR(s.result)}</b></div></div></div>
     `;
   }
@@ -375,16 +499,19 @@
   }
 
   function bindDynamic(){
-    $$('[data-open-asset]').forEach(el=>el.addEventListener('click',e=>{ if(e.target.closest('[data-remove-watch]')) return; openAsset(el.dataset.openAsset); }));
+    $$('[data-open-asset]').forEach(el=>el.addEventListener('click',e=>{ if(e.target.closest('[data-remove-watch-id],[data-watch-candidate]')) return; openAsset(el.dataset.openAsset); }));
     $$('[data-action="new-op"]').forEach(b=>b.addEventListener('click',()=>openOpSheet()));
     $$('[data-action="add-watch"]').forEach(b=>b.addEventListener('click',openWatchSheet));
-    $$('[data-remove-watch]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation(); state.watchlist=state.watchlist.filter(x=>x!==b.dataset.removeWatch); saveState(); renderAll(); toast('Rimosso dal Radar');}));
+    $$('[data-remove-watch-id]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation(); checkpointState('Modifica watchlist'); state.watchlistIds=(state.watchlistIds||[]).filter(x=>x!==b.dataset.removeWatchId); saveState(); renderAll(); toast('Rimosso dalla watchlist');}));
+    $$('[data-watch-candidate]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation(); addWatchById(b.dataset.watchCandidate); }));
+    $$('[data-action="scan-opportunities"]').forEach(b=>b.addEventListener('click',()=>scanOpportunities(true)));
     $$('[data-edit-op]').forEach(b=>b.addEventListener('click',()=>openOpSheet(state.ops.find(o=>o.id===b.dataset.editOp))));
     $$('[data-delete-op]').forEach(b=>b.addEventListener('click',()=>deleteOp(b.dataset.deleteOp)));
     $$('[data-action="new-note"]').forEach(b=>b.addEventListener('click',openNoteSheet));
-    $$('[data-delete-note]').forEach(b=>b.addEventListener('click',()=>{state.notes=state.notes.filter(n=>n.id!==b.dataset.deleteNote);saveState();renderDiary();bindDynamic();toast('Nota eliminata');}));
+    $$('[data-delete-note]').forEach(b=>b.addEventListener('click',()=>{checkpointState('Prima di eliminare nota');state.notes=state.notes.filter(n=>n.id!==b.dataset.deleteNote);saveState();renderDiary();bindDynamic();toast('Nota eliminata');}));
     $$('[data-action="export"]').forEach(b=>b.addEventListener('click',exportBackup));
     $$('[data-action="restore"]').forEach(b=>b.addEventListener('click',()=>$('#restoreInput').click()));
+    $$('[data-action="restore-safety"]').forEach(b=>b.addEventListener('click',restoreCheckpoint));
     $$('[data-action="reset"]').forEach(b=>b.addEventListener('click',resetState));
   }
 
@@ -392,6 +519,7 @@
     $$('.view').forEach(v=>v.classList.toggle('active',v.id===`view-${name}`));
     $$('.nav-btn[data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
     state.ui.lastView=name; saveState(); window.scrollTo({top:0,behavior:'smooth'});
+    if(name==='radar') scanOpportunities(false);
   }
 
   function openBackdrop(sheet){
@@ -404,7 +532,7 @@
   function openAsset(symbol){
     const s=portfolioSnapshot();
     const pos=s.positions.find(p=>p.symbol===symbol) || null;
-    const meta=assetBySymbol(symbol)||pos;
+    const meta=assetBySymbol(symbol)||pos||(state.opportunity?.candidates||[]).find(c=>c.symbol===symbol);
     if(!meta) return;
     currentSheetAsset={...meta,...(pos||{})}; currentRange='7d';
     const sheet=$('#assetSheet'); openBackdrop(sheet); renderAssetSheet();
@@ -434,12 +562,14 @@
         <div class="detail-box"><span>Valore attuale</span><b>${fmtEUR(positionValue(pos))}</b></div>
         <div class="detail-box"><span>P/L latente</span><b class="${cls(pnl)}">${fmtEUR(pnl)}</b></div>
         <div class="detail-box"><span>P/L %</span><b class="${cls(pct)}">${fmtPct(pct)}</b></div>
-      </div><div class="detail-note" style="margin-top:10px">${positionExplanation(pos,m)}</div></div>`:''}
+      </div><div class="detail-note" style="margin-top:10px">${positionExplanation(pos,m)}</div><div class="position-actions"><button class="chip-btn" data-action="quick-buy">＋ Acquisto</button><button class="sell-all-btn" data-action="sell-all">Vendi tutto</button></div></div>`:''}
       <div class="sheet-section"><div class="eyebrow">TREND</div><div class="range-row"><button class="range-btn" data-range="1d">24h</button><button class="range-btn active" data-range="7d">7g</button><button class="range-btn" data-range="30d">30g</button>${owned?'<button class="range-btn" data-range="since">Da acquisto</button>':''}</div><div id="detailChart" class="chart-wrap"><div class="chart-empty">Carico il trend…</div></div></div>
       <div class="sheet-section"><div class="detail-note">${radarReason(m,owned)} Gli indicatori descrivono il movimento del mercato: non eseguono ordini e non modificano Revolut.</div></div>
     `;
     $$('[data-close-sheet]').forEach(b=>b.addEventListener('click',closeSheets));
     $$('#assetSheet [data-range]').forEach(b=>b.addEventListener('click',()=>{currentRange=b.dataset.range; $$('#assetSheet [data-range]').forEach(x=>x.classList.toggle('active',x===b)); loadDetailChart(a,owned?pos:null,currentRange);}));
+    const sellBtn=$('#assetSheet [data-action="sell-all"]'); if(sellBtn&&pos) sellBtn.addEventListener('click',()=>quickSellAll(pos));
+    const buyBtn=$('#assetSheet [data-action="quick-buy"]'); if(buyBtn&&pos) buyBtn.addEventListener('click',()=>quickBuy(pos));
     loadDetailChart(a,owned?pos:null,'7d');
   }
 
@@ -488,6 +618,16 @@
     updateOpFields();
   }
 
+  function quickSellAll(pos){
+    closeSheets(); openOpSheet();
+    $('#opType').value='SELL'; $('#opAccount').value=pos.account; populateAssetSelect($('#opAsset'),pos.symbol); $('#opQty').value=pos.qty;
+    $('#opAmount').value=Math.max(0,positionValue(pos)).toFixed(2); $('#opFee').value='0'; $('#opNote').value=`Vendita totale ${pos.symbol} — sostituire l'importo stimato con quello reale Revolut`;
+    updateOpFields(); $('#opHint').textContent=`Quantità completa precompilata. L'importo ${fmtEUR(positionValue(pos))} è una stima live: inserisci l'incasso reale mostrato da Revolut prima di salvare.`;
+  }
+  function quickBuy(pos){
+    closeSheets(); openOpSheet(); $('#opType').value='BUY'; $('#opAccount').value=pos.account; populateAssetSelect($('#opAsset'),pos.symbol); $('#opQty').value=''; $('#opAmount').value=''; $('#opFee').value='0'; $('#opNote').value=`Nuovo acquisto ${pos.symbol}`; updateOpFields();
+  }
+
   function updateOpFields(){
     const type=$('#opType').value, assetMode=['BUY','SELL'].includes(type), transfer=type==='TRANSFER';
     $('#assetFields').hidden=!assetMode; $('#feeLabel').hidden=!assetMode; $('#toAccountLabel').hidden=!transfer;
@@ -528,22 +668,47 @@
     const id=$('#opId').value||uid();
     const op={id,type:$('#opType').value,account:$('#opAccount').value,toAccount:$('#opToAccount').value,symbol,name,assetId,qty:num($('#opQty').value),amount:num($('#opAmount').value),fee:num($('#opFee').value),date:$('#opDate').value,note:$('#opNote').value.trim()};
     const err=validateOp(op,$('#opId').value||null); if(err){toast(err);return;}
+    checkpointState($('#opId').value?'Prima di modificare operazione':'Prima di nuova operazione');
     const idx=state.ops.findIndex(o=>o.id===id); if(idx>=0) state.ops[idx]=op; else state.ops.push(op);
     saveState(); closeSheets(); renderAll(); refreshMarket(true); toast(idx>=0?'Operazione aggiornata':'Operazione salvata');
   }
 
   function deleteOp(id){
     if(!confirm('Eliminare questa operazione? I saldi e le posizioni verranno ricalcolati.')) return;
-    state.ops=state.ops.filter(o=>o.id!==id); saveState(); renderAll(); toast('Operazione eliminata');
+    checkpointState('Prima di eliminare operazione'); state.ops=state.ops.filter(o=>o.id!==id); saveState(); renderAll(); toast('Operazione eliminata');
   }
 
+  function addWatchAsset(a){
+    if(!a?.id||!a?.symbol) return;
+    const symbol=String(a.symbol).toUpperCase();
+    if(!(state.customAssets||[]).some(x=>x.id===a.id)) state.customAssets.push({symbol,name:a.name||symbol,id:a.id});
+    if(!(state.watchlistIds||[]).includes(a.id)){ checkpointState('Modifica watchlist'); state.watchlistIds.push(a.id); }
+    saveState(); closeSheets(); renderAll(); refreshMarket(true); toast(`${symbol} aggiunta alla watchlist`);
+  }
+  function addWatchById(id){
+    const a=assetById(id)||(state.opportunity?.candidates||[]).find(x=>x.id===id); if(!a)return; addWatchAsset(a);
+  }
+  function renderWatchChoices(choices){
+    const snap=portfolioSnapshot(),ownedIds=new Set(snap.positions.map(p=>p.id));
+    const unique=[]; const seen=new Set();
+    (choices||[]).forEach(a=>{if(a?.id&&!seen.has(a.id)){seen.add(a.id);unique.push(a);}});
+    $('#watchChoices').innerHTML=unique.length?unique.slice(0,14).map(a=>{const symbol=String(a.symbol||'').toUpperCase(),owned=ownedIds.has(a.id),watched=(state.watchlistIds||[]).includes(a.id);return `<div class="choice"><div><b>${esc(symbol)} · ${esc(a.name)}</b><small>${a.market_cap_rank?`rank #${esc(a.market_cap_rank)} · `:''}${esc(a.id)}</small></div>${owned?'<span class="choice-state">in portafoglio</span>':watched?'<span class="choice-state">già seguita</span>':`<button data-pick-watch-id="${esc(a.id)}" data-pick-watch-symbol="${esc(symbol)}">Aggiungi</button>`}</div>`;}).join(''):'<div class="empty">Nessun risultato.</div>';
+    $$('[data-pick-watch-id]').forEach(b=>b.addEventListener('click',()=>{const a=unique.find(x=>x.id===b.dataset.pickWatchId);if(a)addWatchAsset({...a,symbol:String(a.symbol).toUpperCase()});}));
+  }
+  async function searchWatch(q){
+    const local=allAssets().filter(a=>`${a.symbol} ${a.name} ${a.id}`.toLowerCase().includes(q.toLowerCase()));
+    renderWatchChoices(local);
+    if(q.trim().length<2){ $('#watchSearchStatus').textContent='Scrivi almeno 2 caratteri oppure scegli un suggerimento.'; return; }
+    $('#watchSearchStatus').textContent='Cerco su CoinGecko…';
+    try{
+      const res=await fetch(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(q.trim())}`,{headers:{accept:'application/json'},cache:'no-store'}); if(!res.ok) throw new Error('HTTP '+res.status);
+      const data=await res.json(); const remote=(data.coins||[]).slice(0,14).map(x=>({id:x.id,symbol:String(x.symbol||'').toUpperCase(),name:x.name,market_cap_rank:x.market_cap_rank}));
+      const byId=new Map([...local,...remote].map(a=>[a.id,a])); renderWatchChoices([...byId.values()]); $('#watchSearchStatus').textContent=`${byId.size} risultati · scegli la crypto corretta per nome.`;
+    }catch(_){ $('#watchSearchStatus').textContent='Ricerca online momentaneamente non disponibile: mostro i risultati locali.'; }
+  }
   function openWatchSheet(){
-    if((state.watchlist||[]).length>=3){toast('Watchlist piena: massimo 3 crypto non possedute');return;}
-    const snap=portfolioSnapshot(),owned=new Set(snap.positions.map(p=>p.symbol));
-    const choices=allAssets().filter(a=>!owned.has(a.symbol)&&!['BTC','ETH'].includes(a.symbol)&&!state.watchlist.includes(a.symbol));
-    $('#watchChoices').innerHTML=choices.map(a=>`<div class="choice"><div><b>${esc(a.symbol)} · ${esc(a.name)}</b><small>${esc(a.id)}</small></div><button data-pick-watch="${esc(a.symbol)}">Aggiungi</button></div>`).join('')||'<div class="empty">Nessuna crypto disponibile.</div>';
-    openBackdrop($('#watchSheet'));
-    $$('[data-pick-watch]').forEach(b=>b.addEventListener('click',()=>{ if(state.watchlist.length>=3)return; state.watchlist.push(b.dataset.pickWatch);saveState();closeSheets();renderAll();refreshMarket(true);toast(`${b.dataset.pickWatch} aggiunta al Radar`);}));
+    const defaults=['MEW','ADA','SUI','LINK','DOGE','RENDER'].map(assetBySymbol).filter(Boolean);
+    $('#watchSearch').value=''; $('#watchSearchStatus').textContent='Cerca per sigla o nome. Non serve conoscere il CoinGecko ID.'; renderWatchChoices(defaults); openBackdrop($('#watchSheet')); setTimeout(()=>$('#watchSearch')?.focus(),150);
   }
 
   function openNoteSheet(){
@@ -552,7 +717,7 @@
   }
   function saveNote(e){
     e.preventDefault(); const text=$('#noteText').value.trim(); if(!text)return;
-    state.notes.push({id:`note-${Date.now()}`,symbol:$('#noteAsset').value,date:$('#noteDate').value,text}); saveState();closeSheets();renderDiary();bindDynamic();toast('Nota salvata');
+    checkpointState('Prima di nuova nota'); state.notes.push({id:`note-${Date.now()}`,symbol:$('#noteAsset').value,date:$('#noteDate').value,text}); saveState();closeSheets();renderDiary();bindDynamic();toast('Nota salvata');
   }
 
   function exportBackup(){
@@ -560,36 +725,61 @@
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a');a.href=url;a.download=`crypto-conte-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
   }
   async function restoreBackup(file){
-    try{ const data=JSON.parse(await file.text()); if(!data?.state?.ops||!Array.isArray(data.state.ops)) throw new Error('Formato non valido'); state={...defaultState(),...data.state}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll();refreshMarket(true);toast('Backup importato'); }catch(_){toast('Backup non valido');}
+    try{ const data=JSON.parse(await file.text()); if(!data?.state?.ops||!Array.isArray(data.state.ops)) throw new Error('Formato non valido'); checkpointState('Prima di importare backup'); state={...defaultState(),...data.state,opportunity:{...defaultState().opportunity,...(data.state.opportunity||{})}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll();refreshMarket(true);toast('Backup importato'); }catch(_){toast('Backup non valido');}
   }
   function resetState(){
-    if(!confirm('Ripristinare i dati iniziali RC1? Le operazioni e note manuali verranno eliminate.')) return;
-    state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC1 ripristinata');
+    if(!confirm('Ripristinare i dati iniziali RC2? Le operazioni e note manuali verranno eliminate.')) return;
+    checkpointState('Prima del ripristino RC2'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC2 ripristinata');
   }
 
   function wantedIds(){
-    const snap=portfolioSnapshot(); const syms=new Set(['BTC','ETH',...snap.positions.map(p=>p.symbol),...(state.watchlist||[])]);
-    const ids=[...syms].map(s=>assetBySymbol(s)?.id).filter(Boolean); return [...new Set(ids)];
+    const snap=portfolioSnapshot();
+    const ids=new Set(['bitcoin','ethereum',...snap.positions.map(p=>p.id),...(state.watchlistIds||[]),...(state.opportunity?.candidates||[]).map(c=>c.id)]);
+    (state.opportunity?.signals||[]).filter(sig=>Date.now()-num(sig.time)<50*3600000).forEach(sig=>ids.add(sig.id));
+    return [...ids].filter(Boolean);
+  }
+  async function scanOpportunities(force=false){
+    if(opportunityScanInFlight) return;
+    const opp=state.opportunity||defaultState().opportunity;
+    if(!force&&Date.now()-num(opp.time)<OPPORTUNITY_TTL){ (opp.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c}); return; }
+    opportunityScanInFlight=true;
+    const btn=$('[data-action="scan-opportunities"]'); if(btn){btn.disabled=true;btn.textContent='scansione…';}
+    try{
+      const marketUrl='https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&order=market_cap_desc&per_page=100&page=1&sparkline=true&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full';
+      const trendUrl='https://api.coingecko.com/api/v3/search/trending';
+      const [mr,tr]=await Promise.all([fetch(marketUrl,{headers:{accept:'application/json'},cache:'no-store'}),fetch(trendUrl,{headers:{accept:'application/json'},cache:'no-store'})]);
+      if(!mr.ok) throw new Error('HTTP '+mr.status);
+      const rows=await mr.json(); let trendingIds=new Set();
+      if(tr.ok){ const td=await tr.json(); trendingIds=new Set((td.coins||[]).map(x=>x.item?.id).filter(Boolean)); }
+      const btc=rows.find(x=>x.id==='bitcoin')||market.bitcoin||{}; const prev=opp.prev||{};
+      const assessed=rows.filter(x=>x.id!=='bitcoin'&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.market_cap)>=50_000_000&&num(x.total_volume)>=3_000_000).map(x=>analyzeOpportunity(x,btc,prev[x.id],trendingIds)).filter(Boolean);
+      assessed.sort((a,b)=>{const rank={INTERESSANTE:3,OSSERVA:2,'NON INSEGUIRE':1};return (rank[b.status]-rank[a.status])||(b.score-a.score)||(num(b.total_volume)-num(a.total_volume));});
+      const candidates=assessed.slice(0,5); const nextPrev={}; rows.forEach(x=>nextPrev[x.id]={time:Date.now(),volume:num(x.total_volume),price:num(x.current_price)});
+      updateSignalOutcomes(rows); state.opportunity={...opp,time:Date.now(),candidates,prev:nextPrev,trending:[...trendingIds],signals:state.opportunity.signals||[]}; recordOpportunitySignals(candidates);
+      candidates.forEach(c=>market[c.id]={...market[c.id],...c}); saveState(); renderAll(); toast(candidates.length?`Radar: ${candidates.length} candidati da osservare`:'Radar: nessun segnale pulito al momento');
+    }catch(_){ toast('Radar Opportunità: scansione non disponibile, riproverà automaticamente'); }
+    finally{ opportunityScanInFlight=false; const b=$('[data-action="scan-opportunities"]');if(b){b.disabled=false;b.textContent='◎ Scansiona';} }
   }
   async function refreshMarket(force=false){
+    if(marketRefreshInFlight) return;
     const status=$('#dataStatus');
-    if(!force && Date.now()-num(state.marketCache?.time)<MARKET_TTL){ market={...BASELINE.seedMarket,...(state.marketCache.data||{})}; setDataStatus('cache'); renderAll(); return; }
-    status.className='data-status'; status.innerHTML='<span class="dot"></span><span>aggiorno prezzi e trend…</span>';
+    if(!force && Date.now()-num(state.marketCache?.time)<MARKET_TTL){ market={...BASELINE.seedMarket,...(state.marketCache.data||{})}; (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c}); setDataStatus('cache'); renderAll(); scanOpportunities(false); return; }
+    marketRefreshInFlight=true; status.className='data-status'; status.innerHTML='<span class="dot"></span><span>aggiorno prezzi e trend…</span>';
     try{
       const ids=wantedIds();
       const url=`https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&ids=${encodeURIComponent(ids.join(','))}&order=market_cap_desc&sparkline=true&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full`;
       const res=await fetch(url,{headers:{accept:'application/json'},cache:'no-store'}); if(!res.ok) throw new Error('HTTP '+res.status);
-      const arr=await res.json(); const data={...market}; arr.forEach(x=>data[x.id]=x); market=data; state.marketCache={time:Date.now(),data}; saveState(); setDataStatus('live'); renderAll();
-    }catch(err){
-      market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; setDataStatus('error'); renderAll();
-    }
+      const arr=await res.json(); const data={...market}; arr.forEach(x=>data[x.id]=x); market=data; updateSignalOutcomes(arr); state.marketCache={time:Date.now(),data}; saveState(); setDataStatus('live'); renderAll(); scanOpportunities(false);
+    }catch(err){ market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c}); setDataStatus('error'); renderAll(); }
+    finally{ marketRefreshInFlight=false; }
   }
+
   function setDataStatus(mode){
     const el=$('#dataStatus'); if(!el)return;
     const t=state.marketCache?.time?new Intl.DateTimeFormat('it-IT',{hour:'2-digit',minute:'2-digit'}).format(new Date(state.marketCache.time)):'baseline';
-    if(mode==='live') el.className='data-status live',el.innerHTML=`<span class="dot"></span><span>live · aggiornato ${t}</span>`;
+    if(mode==='live') el.className='data-status live',el.innerHTML=`<span class="dot"></span><span>live · auto 2m30s · aggiornato ${t}</span>`;
     else if(mode==='error') el.className='data-status error',el.innerHTML=`<span class="dot"></span><span>dati cached · ultimo aggiornamento ${t}</span>`;
-    else el.className='data-status',el.innerHTML=`<span class="dot"></span><span>cache · ${t}</span>`;
+    else el.className='data-status',el.innerHTML=`<span class="dot"></span><span>cache · auto 2m30s · ${t}</span>`;
   }
 
   function toast(msg){
@@ -600,12 +790,17 @@
     renderAll(); showView(state.ui.lastView||'home');
     $$('.nav-btn[data-view]').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));
     $('.nav-main').addEventListener('click',()=>openOpSheet());
-    $('#refreshBtn').addEventListener('click',()=>refreshMarket(true));
+    $('#refreshBtn').addEventListener('click',()=>{refreshMarket(true);scanOpportunities(false);});
     $('#sheetBackdrop').addEventListener('click',closeSheets); $$('[data-close-sheet]').forEach(b=>b.addEventListener('click',closeSheets));
     $('#opType').addEventListener('change',updateOpFields); $('#opAccount').addEventListener('change',updateOpFields); $('#opAsset').addEventListener('change',updateOpFields); $('#opForm').addEventListener('submit',saveOperation); $('#noteForm').addEventListener('submit',saveNote);
+    $('#watchSearch').addEventListener('input',e=>{clearTimeout(watchSearchTimer);const q=e.target.value;watchSearchTimer=setTimeout(()=>searchWatch(q),350);});
     $('#restoreInput').addEventListener('change',e=>{const f=e.target.files?.[0];if(f)restoreBackup(f);e.target.value='';});
+    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){if(Date.now()-num(state.marketCache?.time)>45000)refreshMarket(true);scanOpportunities(false);}});
+    window.addEventListener('online',()=>{refreshMarket(true);scanOpportunities(false);});
+    setInterval(()=>{if(document.visibilityState==='visible')refreshMarket(true);},AUTO_REFRESH_MS);
+    setInterval(()=>{if(document.visibilityState==='visible')scanOpportunities(false);},180000);
     if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
-    refreshMarket(false);
+    refreshMarket(false); scanOpportunities(false);
   }
 
   document.addEventListener('DOMContentLoaded',init);

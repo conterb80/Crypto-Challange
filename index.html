@@ -1,9 +1,146 @@
-<!doctype html><html lang='it'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'><meta name='theme-color' content='#0b1020'><link rel='manifest' href='manifest.json'><link rel='stylesheet' href='style.css'><title>Crypto Conte</title></head><body><header><div><small>SALA CONTROLLO</small><h1>Crypto Conte</h1></div><button id='refresh'>↻</button></header><main>
-<section class='hero'><div><span>BASE</span><b id='baseValue'>100,00 €</b><small id='basePnl'>Caricamento prezzi…</small></div><div><span>FONDO TEST</span><b id='testValue'>6,99 €</b><small>liquido</small></div></section>
-<section class='card btc'><div><span>₿ BTC · TERMOMETRO</span><b id='btcPrice'>—</b></div><div id='btcState' class='pill'>—</div><small id='btcChange'>Aggiornamento…</small></section>
-<h2>Portafoglio Base</h2><section id='portfolio' class='grid'></section>
-<section class='card'><div class='row'><h2>⚡ Fondo Test</h2><span class='pill ok'>PRONTO</span></div><div class='testgrid'><div><small>Disponibile</small><b>6,99 €</b></div><div><small>Investito</small><b>0,00 €</b></div><div><small>Risultato test</small><b>0,00 €</b></div></div><p>Capitale dinamico separato dalla Base. Nessun ingresso finché non c'è un motivo.</p></section>
-<section class='card'><div class='row'><h2>📡 Radar</h2><span class='pill warn'>OSSERVA</span></div><p>Il radar automatico della chat cerca volume, momentum, breakout, forza rispetto a BTC e catalizzatori. Qui annoterai solo i candidati che vuoi seguire.</p><div id='watch'></div><button class='wide' id='addWatch'>+ Aggiungi candidato</button></section>
-<section class='card'><h2>🎓 Scuola rapida</h2><div class='terms' id='terms'></div></section>
-<section class='card'><h2>📓 Diario Challenge</h2><div id='diary'></div><button class='wide' id='addDiary'>+ Registra operazione</button></section>
-<p class='foot'>Monitor educativo. Prezzi indicativi da CoinGecko. Acquisti e vendite restano esclusivamente su Revolut.</p></main><script src='app.js'></script></body></html>
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#081120">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Crypto Conte - sala controllo personale per monitorare portafoglio, trend, radar e operazioni manuali.">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css?v=2.1.0">
+  <title>Crypto Conte</title>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">SALA CONTROLLO</div>
+        <h1>Crypto Conte</h1>
+        <div id="dataStatus" class="data-status"><span class="dot"></span><span>caricamento dati…</span></div>
+      </div>
+      <button id="refreshBtn" class="icon-btn" aria-label="Aggiorna dati" title="Aggiorna">↻</button>
+    </header>
+
+    <main>
+      <section id="view-home" class="view active"></section>
+      <section id="view-radar" class="view"></section>
+      <section id="view-ops" class="view"></section>
+      <section id="view-school" class="view"></section>
+      <section id="view-diary" class="view"></section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="Navigazione principale">
+      <button class="nav-btn active" data-view="home"><span>⌂</span><small>Sala</small></button>
+      <button class="nav-btn" data-view="radar"><span>◉</span><small>Radar</small></button>
+      <button class="nav-btn nav-main" data-action="new-op"><span>＋</span><small>Operazione</small></button>
+      <button class="nav-btn" data-view="school"><span>◇</span><small>Scuola</small></button>
+      <button class="nav-btn" data-view="diary"><span>≡</span><small>Diario</small></button>
+    </nav>
+  </div>
+
+  <div id="sheetBackdrop" class="backdrop" hidden></div>
+
+  <section id="assetSheet" class="sheet" aria-modal="true" role="dialog" hidden>
+    <div class="sheet-handle"></div>
+    <div id="assetSheetBody"></div>
+  </section>
+
+  <section id="opSheet" class="sheet" aria-modal="true" role="dialog" hidden>
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <div><div class="eyebrow">REGISTRA</div><h2 id="opSheetTitle">Nuova operazione</h2></div>
+      <button class="ghost-btn" data-close-sheet>Chiudi</button>
+    </div>
+    <form id="opForm" class="form-grid" autocomplete="off">
+      <input type="hidden" id="opId">
+      <label>Tipo
+        <select id="opType" required>
+          <option value="BUY">Acquisto</option>
+          <option value="SELL">Vendita</option>
+          <option value="DEPOSIT_PERSONAL">Versamento personale</option>
+          <option value="DEPOSIT_REWARD">Reward / bonus</option>
+          <option value="WITHDRAW">Prelievo</option>
+          <option value="TRANSFER">Trasferimento Base ↔ Test</option>
+        </select>
+      </label>
+      <label>Conto
+        <select id="opAccount" required>
+          <option value="base">Portafoglio Base</option>
+          <option value="test">Fondo Test</option>
+        </select>
+      </label>
+
+      <div id="assetFields" class="form-subgrid">
+        <label>Crypto
+          <select id="opAsset"></select>
+        </label>
+        <div id="customAssetFields" class="form-subgrid compact" hidden>
+          <label>Sigla<input id="customSymbol" maxlength="12" placeholder="ADA"></label>
+          <label>Nome<input id="customName" placeholder="Cardano"></label>
+          <label>CoinGecko ID<input id="customId" placeholder="cardano"></label>
+        </div>
+        <label>Quantità<input id="opQty" type="number" min="0" step="any" inputmode="decimal" placeholder="0,00"></label>
+      </div>
+
+      <label id="amountLabel">Importo crypto (€)
+        <input id="opAmount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0,00" required>
+      </label>
+      <label id="feeLabel">Commissione (€)
+        <input id="opFee" type="number" min="0" step="0.01" inputmode="decimal" value="0">
+      </label>
+      <label id="toAccountLabel" hidden>Versa su
+        <select id="opToAccount">
+          <option value="test">Fondo Test</option>
+          <option value="base">Portafoglio Base</option>
+        </select>
+      </label>
+      <label>Data e ora
+        <input id="opDate" type="datetime-local" required>
+      </label>
+      <label class="full">Nota
+        <input id="opNote" maxlength="120" placeholder="es. vendita PEPE e rotazione su…">
+      </label>
+      <div id="opHint" class="form-hint full"></div>
+      <button class="primary-btn full" type="submit">Salva operazione</button>
+    </form>
+  </section>
+
+  <section id="watchSheet" class="sheet" aria-modal="true" role="dialog" hidden>
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <div><div class="eyebrow">RADAR</div><h2>Aggiungi alla watchlist</h2></div>
+      <button class="ghost-btn" data-close-sheet>Chiudi</button>
+    </div>
+    <div id="watchChoices" class="choice-list"></div>
+    <p class="muted small">Massimo 3 crypto non possedute. Le posizioni aperte sono già incluse automaticamente nel Radar.</p>
+  </section>
+
+  <section id="noteSheet" class="sheet" aria-modal="true" role="dialog" hidden>
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <div><div class="eyebrow">DIARIO</div><h2>Nuova nota</h2></div>
+      <button class="ghost-btn" data-close-sheet>Chiudi</button>
+    </div>
+    <form id="noteForm" class="form-grid">
+      <label>Crypto
+        <select id="noteAsset"></select>
+      </label>
+      <label>Data
+        <input id="noteDate" type="datetime-local" required>
+      </label>
+      <label class="full">Nota
+        <textarea id="noteText" rows="4" maxlength="400" required placeholder="Cosa vuoi ricordare?"></textarea>
+      </label>
+      <button class="primary-btn full" type="submit">Salva nota</button>
+    </form>
+  </section>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <input id="restoreInput" type="file" accept="application/json" hidden>
+
+  <script src="app.js?v=2.1.0"></script>
+</body>
+</html>

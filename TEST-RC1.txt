@@ -1,0 +1,39 @@
+TEST RC1 — CHECK RAPIDO
+
+1) HOME
+[ ] Capitale tuo = 100,00 €
+[ ] Reward / bonus = 7,46 €
+[ ] Fondo Test liquido = 6,99 €
+[ ] Le 6 posizioni Base sono presenti
+[ ] Prezzi si aggiornano premendo ↻
+
+2) POSIZIONE
+[ ] Toccare NEAR: quantità 3,99129 e medio 3,7581 €
+[ ] Toccare SOL: quantità 0,193752 e medio 103,220 €
+[ ] Vedere P/L in € e %
+[ ] Cambiare trend 24h / 7g / 30g / Da acquisto
+
+3) RADAR
+[ ] BTC ed ETH presenti
+[ ] Tutte le posizioni presenti
+[ ] Aggiungere 1 crypto alla watchlist e poi rimuoverla
+
+4) OPERAZIONI — PROVA SENZA RISCHIO DATI
+Prima: Diario > Esporta backup.
+[ ] Registrare un piccolo versamento personale di prova nel Fondo Test
+[ ] Modificarlo
+[ ] Eliminarlo
+[ ] Verificare che il saldo torni identico
+
+5) FLUSSO REALE FUTURO ESEMPIO PEPE
+[ ] Vendita PEPE -> la liquidità Base aumenta
+[ ] Acquisto nuova crypto -> la liquidità Base diminuisce e nasce/si aggiorna la posizione
+[ ] Se PEPE arriva a quantità zero non compare più tra le posizioni aperte
+[ ] Il P/L realizzato compare nel Diario
+
+6) PWA
+[ ] Chiudere e riaprire: dati manuali ancora presenti
+[ ] Modalità standalone senza barra del browser
+
+DOPO IL TEST
+Annotare solo problemi concreti: conti, usabilità, lentezza, dati mancanti. La grafica viene ritoccata solo dove migliora davvero la lettura.

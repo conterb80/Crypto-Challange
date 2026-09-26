@@ -1,1 +1,16 @@
-{"name":"Crypto Conte - Sala Controllo","short_name":"Crypto Conte","start_url":"./","display":"standalone","background_color":"#070b14","theme_color":"#0b1020","icons":[{"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]}
+{
+  "id": "./",
+  "name": "Crypto Conte",
+  "short_name": "Crypto Conte",
+  "description": "Sala controllo personale per portafoglio crypto, trend, radar e diario operazioni.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#081120",
+  "theme_color": "#081120",
+  "icons": [
+    {"src":"icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
+    {"src":"icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ]
+}

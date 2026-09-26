@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.2.0';
+  const VERSION = '2.3.0';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 90 * 1000;
   const AUTO_REFRESH_MS = 150 * 1000;
@@ -35,7 +35,8 @@
     {symbol:'ARB',name:'Arbitrum',id:'arbitrum'},
     {symbol:'OP',name:'Optimism',id:'optimism'},
     {symbol:'TON',name:'Toncoin',id:'the-open-network'},
-    {symbol:'MEW',name:'cat in a dogs world',id:'cat-in-a-dogs-world'}
+    {symbol:'MEW',name:'cat in a dogs world',id:'cat-in-a-dogs-world'},
+    {symbol:'PYTH',name:'Pyth Network',id:'pyth-network'}
   ];
 
   const BASELINE = {
@@ -253,11 +254,32 @@
 
   function candidateTone(status){ return status==='INTERESSANTE'?'good':status==='NON INSEGUIRE'?'warn':''; }
   function pctChange(from,to){ return from>0&&Number.isFinite(to)?(to/from-1)*100:null; }
+  function screenOpportunity(x,btc,prev,trendingIds){
+    const h=num(x.price_change_percentage_1h_in_currency),d=num(x.price_change_percentage_24h_in_currency),w=num(x.price_change_percentage_7d_in_currency);
+    const bd=num(btc?.price_change_percentage_24h_in_currency),bw=num(btc?.price_change_percentage_7d_in_currency);
+    const rel24=d-bd, rel7=w-bw, vol=num(x.total_volume),cap=num(x.market_cap),volRatio=cap>0?vol/cap:0;
+    const volDelta=prev?.volume>0?(vol/prev.volume-1)*100:null;
+    const scanMove=prev?.price>0?pctChange(prev.price,num(x.current_price)):null;
+    const trending=trendingIds.has(x.id);
+    let score=0;
+    if(volRatio>=.22) score+=3; else if(volRatio>=.10) score+=2; else if(volRatio>=.05) score+=1;
+    if(volDelta!=null&&volDelta>=12) score+=3; else if(volDelta!=null&&volDelta>=5) score+=2;
+    if(scanMove!=null&&scanMove>=.45&&scanMove<=3.5) score+=2; else if(scanMove!=null&&scanMove>=.15) score+=1;
+    if(h>=.30&&h<=4.5) score+=2;
+    if(d>=1.5&&d<=12) score+=2; else if(d>0) score+=1;
+    if(rel24>=2.5) score+=3; else if(rel24>=1) score+=2;
+    if(rel7>=4) score+=1;
+    if(trending) score+=2;
+    if(d<=-7||rel24<=-5) score-=3;
+    return {...x,_screenScore:score,_screenMove:scanMove,_rel24:rel24,_rel7:rel7};
+  }
+
   function analyzeOpportunity(x,btc,prev,trendingIds){
     const h=num(x.price_change_percentage_1h_in_currency),d=num(x.price_change_percentage_24h_in_currency),w=num(x.price_change_percentage_7d_in_currency);
     const bd=num(btc?.price_change_percentage_24h_in_currency),bw=num(btc?.price_change_percentage_7d_in_currency);
     const rel24=d-bd, rel7=w-bw, vol=num(x.total_volume),cap=num(x.market_cap),volRatio=cap>0?vol/cap:0;
     const volDelta=prev?.volume>0?(vol/prev.volume-1)*100:null;
+    const scanMove=prev?.price>0?pctChange(prev.price,num(x.current_price)):null;
     const spark=(x.sparkline_in_7d?.price||[]).filter(Number.isFinite), last24=spark.slice(-24), prior24=spark.slice(-48,-24);
     const avg=a=>a.length?a.reduce((s,v)=>s+v,0)/a.length:0, rangePct=a=>{const av=avg(a);return av?((Math.max(...a)-Math.min(...a))/av*100):99;};
     const range24=last24.length>8?rangePct(last24):99, max24=last24.length?Math.max(...last24):num(x.high_24h), priorHigh=prior24.length?Math.max(...prior24):0;
@@ -267,7 +289,8 @@
     const overextended=h>=4.5||d>=14||(d>=10&&nearHigh&&!compressed);
     let score=0;
     if(volRatio>=.22) score+=2; else if(volRatio>=.10) score+=1;
-    if(volDelta!=null&&volDelta>=12) score+=2; else if(volDelta!=null&&volDelta>=6) score+=1;
+    if(volDelta!=null&&volDelta>=12) score+=2; else if(volDelta!=null&&volDelta>=5) score+=1;
+    if(scanMove!=null&&scanMove>=.45&&scanMove<=3.5) score+=2; else if(scanMove!=null&&scanMove>=.15) score+=1;
     if(h>=.35&&h<=3.5) score+=1;
     if(d>=2&&d<=10) score+=2; else if(d>0&&d<2) score+=1;
     if(rel24>=2.5) score+=2; else if(rel24>=1) score+=1;
@@ -278,18 +301,19 @@
     if(d<=-5||rel24<=-4) score-=2;
     let status=null;
     if(overextended&&(d>=8||h>=4.5)) status='NON INSEGUIRE';
-    else if(score>=6&&d>0&&rel24>0) status='INTERESSANTE';
-    else if(score>=3) status='OSSERVA';
+    else if(score>=7&&d>0&&rel24>0) status='INTERESSANTE';
+    else if(score>=4) status='OSSERVA';
     if(!status) return null;
     const reasons=[];
     if(volDelta!=null&&volDelta>=10) reasons.push(`volume in aumento ${fmtPct(volDelta)}`); else if(volRatio>=.18) reasons.push('volume molto attivo');
+    if(scanMove!=null&&scanMove>=.30&&scanMove<=3.5) reasons.push(`accelerazione scan ${fmtPct(scanMove)}`);
     if(d>=2&&d<=10) reasons.push(`momentum 24h ${fmtPct(d)}`);
     if(rel24>=1.5) reasons.push(`forza vs BTC ${fmtPct(rel24)}`);
     if(compressed&&nearHigh) reasons.push('compressione vicino ai massimi 24h');
     else if(breakout) reasons.push('tentativo di breakout');
     if(trending) reasons.push('interesse CoinGecko in aumento');
     if(overextended) reasons.unshift('movimento già molto esteso');
-    return {...x,symbol:String(x.symbol||'').toUpperCase(),status,tone:candidateTone(status),score,reason:reasons.slice(0,4).join(' · ')||'movimento da osservare',rel24,rel7,volRatio,volDelta,range24,nearHigh,breakout,trending};
+    return {...x,symbol:String(x.symbol||'').toUpperCase(),status,tone:candidateTone(status),score,reason:reasons.slice(0,4).join(' · ')||'movimento da osservare',rel24,rel7,volRatio,volDelta,scanMove,range24,nearHigh,breakout,trending};
   }
 
   function updateSignalOutcomes(rows){
@@ -319,8 +343,9 @@
 
   function portfolioSnapshot(){
     const r=replay();
-    const basePos=r.positions.filter(p=>p.account==='base');
-    const testPos=r.positions.filter(p=>p.account==='test');
+    const byPerformance=(a,b)=>positionPnlPct(b)-positionPnlPct(a)||positionPnl(b)-positionPnl(a)||a.symbol.localeCompare(b.symbol);
+    const basePos=r.positions.filter(p=>p.account==='base').sort(byPerformance);
+    const testPos=r.positions.filter(p=>p.account==='test').sort(byPerformance);
     const baseValue=basePos.reduce((s,p)=>s+positionValue(p),0)+r.cash.base;
     const testValue=testPos.reduce((s,p)=>s+positionValue(p),0)+r.cash.test;
     const total=baseValue+testValue;
@@ -352,7 +377,7 @@
         <div class="hero-reason">${radarReason(btc,false)} Tocca per aprire il dettaglio.</div>
       </div>
 
-      <div class="section-title"><div><h2>Portafoglio Base</h2><p>${fmtEUR(s.baseValue)} · ${s.basePos.length} posizioni${s.cash.base?` · liquidità ${fmtEUR(s.cash.base)}`:''}</p></div></div>
+      <div class="section-title"><div><h2>Portafoglio Base</h2><p>${fmtEUR(s.baseValue)} · ${s.basePos.length} posizioni${s.cash.base?` · liquidità ${fmtEUR(s.cash.base)}`:''} · ordinate per P/L totale %</p></div></div>
       <div class="portfolio-grid">${s.basePos.map(assetCard).join('')}</div>
 
       <div class="section-title"><div><h2>Fondo Test</h2><p>Separato dal portafoglio Base</p></div><div class="right"><span class="status-pill good">PRONTO</span></div></div>
@@ -387,7 +412,7 @@
     const signals=[...(opp.signals||[])].sort((a,b)=>b.time-a.time).slice(0,8);
     $('#view-radar').innerHTML=`
       <div class="section-title"><div><h2>Radar Opportunità</h2><p>Scansione automatica del mercato ogni 15 minuti · ultimo scan ${scanTime}</p></div><div class="right"><button class="chip-btn" data-action="scan-opportunities">◎ Scansiona</button></div></div>
-      <div class="radar-explain"><b>Cosa cerca:</b> volume, momentum, forza rispetto a BTC, compressione/breakout e interesse di mercato. Mostra pochi candidati per capire <i>perché</i> meritano attenzione, non ordini di acquisto.</div>
+      <div class="radar-explain"><b>Cosa cerca:</b> volume e sua accelerazione, momentum, forza rispetto a BTC, compressione/breakout e interesse di mercato. Scansiona un universo ampio per capitalizzazione, volume e Trending, poi mostra pochi candidati per capire <i>perché</i> meritano attenzione, non ordini di acquisto.</div>
       <div class="opportunity-list">${(opp.candidates||[]).length?(opp.candidates||[]).map(c=>{
         const owned=ownedSymbols.has(c.symbol), watched=isWatched(c);
         return `<article class="opportunity-card" data-open-asset="${esc(c.symbol)}">
@@ -488,7 +513,7 @@
       <div class="section-title"><div><h2>Risultati realizzati</h2><p>Dalle operazioni registrate dopo questo aggiornamento</p></div></div>
       <div class="closed-list">${realizedEntries.length?realizedEntries.map(([sym,v])=>`<article class="closed-card"><div class="closed-top"><div><div class="closed-title">${esc(sym)}</div><div class="closed-sub">P/L realizzato</div></div><div class="${cls(v)}" style="font-size:18px;font-weight:900">${fmtEUR(v)}</div></div></article>`).join(''):'<div class="empty">Nessun profitto o perdita realizzato registrato dalla RC1.</div>'}</div>
 
-      <div class="settings-card"><h3>Backup e sicurezza dati</h3><p class="muted small">I dati manuali restano sul dispositivo. RC2 crea anche un punto sicurezza locale prima delle modifiche importanti.</p><div class="settings-actions"><button class="chip-btn" data-action="export">Esporta backup</button><button class="chip-btn" data-action="restore">Importa backup</button><button class="chip-btn" data-action="restore-safety">Ripristina ultimo punto</button><button class="danger-btn" data-action="reset">Ripristina RC2</button></div></div>
+      <div class="settings-card"><h3>Backup e sicurezza dati</h3><p class="muted small">I dati manuali restano sul dispositivo. RC3 mantiene anche un punto sicurezza locale prima delle modifiche importanti.</p><div class="settings-actions"><button class="chip-btn" data-action="export">Esporta backup</button><button class="chip-btn" data-action="restore">Importa backup</button><button class="chip-btn" data-action="restore-safety">Ripristina ultimo punto</button><button class="danger-btn" data-action="reset">Ripristina RC3</button></div></div>
       <div class="settings-card"><h3>Contabilità</h3><div class="cash-details"><div class="cash-mini"><span>Capitale personale</span><b>${fmtEUR(s.ownDeposits)}</b></div><div class="cash-mini"><span>Reward accumulati</span><b>${fmtEUR(s.rewardDeposits)}</b></div><div class="cash-mini"><span>Prelievi registrati</span><b>${fmtEUR(s.withdrawals)}</b></div><div class="cash-mini"><span>Risultato reale</span><b class="${cls(s.result)}">${fmtEUR(s.result)}</b></div></div></div>
     `;
   }
@@ -728,8 +753,8 @@
     try{ const data=JSON.parse(await file.text()); if(!data?.state?.ops||!Array.isArray(data.state.ops)) throw new Error('Formato non valido'); checkpointState('Prima di importare backup'); state={...defaultState(),...data.state,opportunity:{...defaultState().opportunity,...(data.state.opportunity||{})}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll();refreshMarket(true);toast('Backup importato'); }catch(_){toast('Backup non valido');}
   }
   function resetState(){
-    if(!confirm('Ripristinare i dati iniziali RC2? Le operazioni e note manuali verranno eliminate.')) return;
-    checkpointState('Prima del ripristino RC2'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC2 ripristinata');
+    if(!confirm('Ripristinare i dati iniziali RC3? Le operazioni e note manuali verranno eliminate.')) return;
+    checkpointState('Prima del ripristino RC3'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC3 ripristinata');
   }
 
   function wantedIds(){
@@ -745,17 +770,42 @@
     opportunityScanInFlight=true;
     const btn=$('[data-action="scan-opportunities"]'); if(btn){btn.disabled=true;btn.textContent='scansione…';}
     try{
-      const marketUrl='https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&order=market_cap_desc&per_page=100&page=1&sparkline=true&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full';
+      const common='vs_currency=eur&per_page=250&page=1&sparkline=false&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full';
+      const capUrl=`https://api.coingecko.com/api/v3/coins/markets?${common}&order=market_cap_desc`;
+      const volumeUrl=`https://api.coingecko.com/api/v3/coins/markets?${common}&order=volume_desc`;
       const trendUrl='https://api.coingecko.com/api/v3/search/trending';
-      const [mr,tr]=await Promise.all([fetch(marketUrl,{headers:{accept:'application/json'},cache:'no-store'}),fetch(trendUrl,{headers:{accept:'application/json'},cache:'no-store'})]);
-      if(!mr.ok) throw new Error('HTTP '+mr.status);
-      const rows=await mr.json(); let trendingIds=new Set();
+      const [capRes,volRes,tr]=await Promise.all([
+        fetch(capUrl,{headers:{accept:'application/json'},cache:'no-store'}),
+        fetch(volumeUrl,{headers:{accept:'application/json'},cache:'no-store'}),
+        fetch(trendUrl,{headers:{accept:'application/json'},cache:'no-store'})
+      ]);
+      if(!capRes.ok&&!volRes.ok) throw new Error('Radar discovery non disponibile');
+      const capRows=capRes.ok?await capRes.json():[];
+      const volRows=volRes.ok?await volRes.json():[];
+      let trendingIds=new Set();
       if(tr.ok){ const td=await tr.json(); trendingIds=new Set((td.coins||[]).map(x=>x.item?.id).filter(Boolean)); }
-      const btc=rows.find(x=>x.id==='bitcoin')||market.bitcoin||{}; const prev=opp.prev||{};
-      const assessed=rows.filter(x=>x.id!=='bitcoin'&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.market_cap)>=50_000_000&&num(x.total_volume)>=3_000_000).map(x=>analyzeOpportunity(x,btc,prev[x.id],trendingIds)).filter(Boolean);
+
+      const universeMap=new Map(); [...capRows,...volRows].forEach(x=>{if(x?.id)universeMap.set(x.id,x);});
+      const rows=[...universeMap.values()];
+      const btc=universeMap.get('bitcoin')||market.bitcoin||{}; const prev=opp.prev||{};
+      const eligible=rows.filter(x=>x.id!=='bitcoin'&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000&&(num(x.market_cap)>=20_000_000||num(x.total_volume)>=8_000_000));
+      const screened=eligible.map(x=>screenOpportunity(x,btc,prev[x.id],trendingIds)).sort((a,b)=>b._screenScore-a._screenScore||num(b.total_volume)-num(a.total_volume)).slice(0,40);
+
+      const detailIds=new Set(screened.map(x=>x.id));
+      [...trendingIds].slice(0,15).forEach(id=>detailIds.add(id));
+      const detailUrl=`https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&ids=${encodeURIComponent([...detailIds].join(','))}&order=market_cap_desc&sparkline=true&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full`;
+      let detailRows=[];
+      if(detailIds.size){
+        const dr=await fetch(detailUrl,{headers:{accept:'application/json'},cache:'no-store'});
+        if(dr.ok) detailRows=await dr.json();
+      }
+      const detailMap=new Map(detailRows.map(x=>[x.id,x]));
+      const candidatePool=[...new Map([...screened.map(x=>[x.id,detailMap.get(x.id)||x]),...detailRows.map(x=>[x.id,x])]).values()];
+      const assessed=candidatePool.filter(x=>x.id!=='bitcoin'&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000).map(x=>analyzeOpportunity(x,btc,prev[x.id],trendingIds)).filter(Boolean);
       assessed.sort((a,b)=>{const rank={INTERESSANTE:3,OSSERVA:2,'NON INSEGUIRE':1};return (rank[b.status]-rank[a.status])||(b.score-a.score)||(num(b.total_volume)-num(a.total_volume));});
-      const candidates=assessed.slice(0,5); const nextPrev={}; rows.forEach(x=>nextPrev[x.id]={time:Date.now(),volume:num(x.total_volume),price:num(x.current_price)});
-      updateSignalOutcomes(rows); state.opportunity={...opp,time:Date.now(),candidates,prev:nextPrev,trending:[...trendingIds],signals:state.opportunity.signals||[]}; recordOpportunitySignals(candidates);
+      const candidates=assessed.slice(0,5);
+      const now=Date.now(),nextPrev={}; rows.forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)}); detailRows.forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)});
+      updateSignalOutcomes(detailRows.length?detailRows:rows); state.opportunity={...opp,time:now,candidates,prev:nextPrev,trending:[...trendingIds],signals:state.opportunity.signals||[]}; recordOpportunitySignals(candidates);
       candidates.forEach(c=>market[c.id]={...market[c.id],...c}); saveState(); renderAll(); toast(candidates.length?`Radar: ${candidates.length} candidati da osservare`:'Radar: nessun segnale pulito al momento');
     }catch(_){ toast('Radar Opportunità: scansione non disponibile, riproverà automaticamente'); }
     finally{ opportunityScanInFlight=false; const b=$('[data-action="scan-opportunities"]');if(b){b.disabled=false;b.textContent='◎ Scansiona';} }
@@ -798,7 +848,7 @@
     document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){if(Date.now()-num(state.marketCache?.time)>45000)refreshMarket(true);scanOpportunities(false);}});
     window.addEventListener('online',()=>{refreshMarket(true);scanOpportunities(false);});
     setInterval(()=>{if(document.visibilityState==='visible')refreshMarket(true);},AUTO_REFRESH_MS);
-    setInterval(()=>{if(document.visibilityState==='visible')scanOpportunities(false);},180000);
+    setInterval(()=>{if(document.visibilityState==='visible')scanOpportunities(false);},OPPORTUNITY_TTL);
     if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
     refreshMarket(false); scanOpportunities(false);
   }

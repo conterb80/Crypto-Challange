@@ -1,0 +1,23 @@
+CRYPTO CONTE RC3 — TEST RAPIDO
+
+1. HOME / PORTAFOGLIO
+- Controlla che le posizioni siano ordinate dal P/L totale % migliore al peggiore.
+- Verifica che valore totale, P/L e prezzi medi siano invariati rispetto alla RC2.
+
+2. RADAR
+- Apri Radar e premi “Scansiona”.
+- Controlla che l’ora “ultimo scan” si aggiorni.
+- Verifica che vengano mostrati al massimo 5 candidati.
+- Leggi “Perché lo sto guardando”: deve essere più chiaro senza sembrare molto più grande.
+
+3. AUTO-RADAR
+- Lascia l’app aperta: lo scan automatico effettivo avviene ogni 15 minuti.
+- Il refresh prezzi generale resta ogni 2m30s.
+
+4. WATCHLIST / OPERAZIONI
+- Verifica che watchlist, note e operazioni RC2 siano ancora presenti.
+- Prova la ricerca MEW o PYTH senza salvare se non vuoi modificare i dati.
+
+5. SICUREZZA
+- Controlla Diario > Esporta backup.
+- Non usare “Ripristina RC3” durante il test se vuoi conservare i dati reali.

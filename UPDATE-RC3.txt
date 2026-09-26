@@ -1,0 +1,13 @@
+AGGIORNAMENTO DA RC2 A RC3
+
+RC3 conserva i dati della RC2 perché usa lo stesso localStorage sullo stesso indirizzo GitHub Pages.
+
+Prima: Diario > Esporta backup.
+Poi sostituisci TUTTI i file del repository con quelli del pacchetto RC3.
+
+Dopo il deploy:
+1) apri la pagina in Chrome;
+2) premi ↻;
+3) chiudi completamente la PWA;
+4) riaprila;
+5) controlla “SALA CONTROLLO · RC3”.

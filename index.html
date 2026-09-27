@@ -9,7 +9,7 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=2.4.3">
+  <link rel="stylesheet" href="style.css?v=2.4.3.1">
   <title>Crypto Conte</title>
 </head>
 <body>
@@ -71,6 +71,12 @@
           <option value="test">Fondo Test</option>
         </select>
       </label>
+      <label id="toAccountLabel" hidden>A (automatico)
+        <select id="opToAccount" disabled>
+          <option value="test">Fondo Test</option>
+          <option value="base">Portafoglio Base</option>
+        </select>
+      </label>
 
       <div id="assetFields" class="form-subgrid">
         <label>Crypto
@@ -89,12 +95,6 @@
       </label>
       <label id="feeLabel">Commissione (€)
         <input id="opFee" type="number" min="0" step="0.01" inputmode="decimal" value="0">
-      </label>
-      <label id="toAccountLabel" hidden>Destinazione
-        <select id="opToAccount">
-          <option value="test">Fondo Test</option>
-          <option value="base">Portafoglio Base</option>
-        </select>
       </label>
       <label>Data e ora
         <input id="opDate" type="datetime-local" required>
@@ -156,6 +156,6 @@
 
   <input id="restoreInput" type="file" accept="application/json" hidden>
 
-  <script src="app.js?v=2.4.3"></script>
+  <script src="app.js?v=2.4.3.1"></script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.4.3';
+  const VERSION = '2.4.3.1';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 90 * 1000;
   const AUTO_REFRESH_MS = 150 * 1000;
@@ -850,12 +850,15 @@
     if($('#accountLabelText')) $('#accountLabelText').textContent=transfer?'Da':'Conto';
     const snap=portfolioSnapshot(); const acct=$('#opAccount').value; const cash=snap.cash[acct];
     if(transfer){
-      $('#opToAccount').value=acct==='base'?'test':'base';
+      const to=acct==='base'?'test':'base';
+      $('#opToAccount').value=to;
       $('#opToAccount').disabled=true;
+      const opt=$('#opToAccount').selectedOptions?.[0];
+      if(opt) opt.textContent=to==='base'?'Portafoglio Base':'Fondo Test';
     }else{
       $('#opToAccount').disabled=false;
     }
-    $('#opHint').textContent=type==='SELL'?`Inserisci il lordo della vendita e la commissione separatamente: l’app calcola il netto, il costo di carico ceduto e il profitto realmente realizzato.`:assetMode?`Liquidità ${acct==='base'?'Base':'Test'} disponibile: ${fmtEUR(cash)}. Per un acquisto con nuovi soldi registra prima un versamento.`:transfer?`Liquidità disponibile in ${acct==='base'?'Base':'Fondo Test'}: ${fmtEUR(cash)}. La destinazione viene impostata automaticamente sul conto opposto.`:'Questa operazione aggiorna la contabilità del capitale senza modificare direttamente le posizioni.';
+    $('#opHint').textContent=type==='SELL'?`Inserisci il lordo della vendita e la commissione separatamente: l’app calcola il netto, il costo di carico ceduto e il profitto realmente realizzato.`:assetMode?`Liquidità ${acct==='base'?'Base':'Test'} disponibile: ${fmtEUR(cash)}. Per un acquisto con nuovi soldi registra prima un versamento.`:transfer?`Scegli solo il conto di partenza e l’importo. La destinazione è automatica: ${acct==='base'?'Fondo Test':'Portafoglio Base'}. Nessuna crypto viene selezionata o spostata.`:'Questa operazione aggiorna la contabilità del capitale senza modificare direttamente le posizioni.';
     updateSalePreview();
   }
 

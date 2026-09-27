@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.4.1';
+  const VERSION = '2.4.2';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 90 * 1000;
   const AUTO_REFRESH_MS = 150 * 1000;
@@ -151,8 +151,12 @@
     let rewardDeposits = BASELINE.rewardDeposits;
     let withdrawals = BASELINE.withdrawals;
     const realized = {};
+    const realizedByKey = {};
+    const soldCost = {};
+    const sales = [];
     const closed = [];
 
+    const keyFor=(account,symbol)=>`${account}:${symbol}`;
     const getPos = (symbol,account) => positions.find(p=>p.symbol===symbol && p.account===account && p.qty>1e-15);
     const ensurePos = (symbol,account,meta,date) => {
       let p = getPos(symbol,account);
@@ -184,20 +188,32 @@
       }else if(op.type==='SELL'){
         const p=getPos(op.symbol,account);
         if(!p) return;
+        const qtyBefore=p.qty;
         const sold=Math.min(qty,p.qty);
-        const costRemoved=sold*p.avg;
-        const proceeds=amount-fee;
+        const avgAtSale=p.avg;
+        const costRemoved=sold*avgAtSale;
+        const gross=amount;
+        const proceeds=Math.max(0,gross-fee);
+        const realizedPnl=proceeds-costRemoved;
+        const key=keyFor(account,op.symbol);
         cash[account]+=proceeds;
-        realized[op.symbol]=(realized[op.symbol]||0)+(proceeds-costRemoved);
+        realized[op.symbol]=(realized[op.symbol]||0)+realizedPnl;
+        realizedByKey[key]=(realizedByKey[key]||0)+realizedPnl;
+        soldCost[key]=(soldCost[key]||0)+costRemoved;
         p.qty=round(p.qty-sold,12);
+        sales.push({
+          opId:op.id,date:op.date,account,symbol:op.symbol,name:p.name,assetId:p.id,
+          qtySold:sold,qtyBefore,qtyAfter:Math.max(0,p.qty),avg:avgAtSale,gross,fee,net:proceeds,
+          costRemoved,realized:realizedPnl,costAfter:Math.max(0,p.qty)*avgAtSale
+        });
         if(p.qty<=1e-12){
-          closed.push({symbol:p.symbol,name:p.name,account:p.account,closedAt:op.date,realized:realized[p.symbol]||0});
+          closed.push({symbol:p.symbol,name:p.name,account:p.account,closedAt:op.date,realized:realizedByKey[key]||0});
           p.qty=0;
         }
       }
     });
 
-    return {positions:positions.filter(p=>p.qty>1e-12),cash,ownDeposits,rewardDeposits,withdrawals,realized,closed};
+    return {positions:positions.filter(p=>p.qty>1e-12),cash,ownDeposits,rewardDeposits,withdrawals,realized,realizedByKey,soldCost,sales,closed};
   }
 
   function mktFor(p){ return market[p.id] || state.marketCache?.data?.[p.id] || BASELINE.seedMarket[p.id] || null; }
@@ -409,14 +425,18 @@
 
   function portfolioSnapshot(){
     const r=replay();
-    const byPerformance=(a,b)=>positionPnlPct(b)-positionPnlPct(a)||positionPnl(b)-positionPnl(a)||a.symbol.localeCompare(b.symbol);
+    const keyFor=(p)=>`${p.account}:${p.symbol}`;
+    const totalPnlFor=p=>(r.realizedByKey[keyFor(p)]||0)+positionPnl(p);
+    const totalBasisFor=p=>(r.soldCost[keyFor(p)]||0)+positionCost(p);
+    const totalPctFor=p=>{const b=totalBasisFor(p);return b?totalPnlFor(p)/b*100:positionPnlPct(p);};
+    const byPerformance=(a,b)=>totalPctFor(b)-totalPctFor(a)||totalPnlFor(b)-totalPnlFor(a)||a.symbol.localeCompare(b.symbol);
     const basePos=r.positions.filter(p=>p.account==='base').sort(byPerformance);
     const testPos=r.positions.filter(p=>p.account==='test').sort(byPerformance);
     const baseValue=basePos.reduce((s,p)=>s+positionValue(p),0)+r.cash.base;
     const testValue=testPos.reduce((s,p)=>s+positionValue(p),0)+r.cash.test;
     const total=baseValue+testValue;
     const result=total+r.withdrawals-r.ownDeposits-r.rewardDeposits;
-    return {...r,basePos,testPos,baseValue,testValue,total,result};
+    return {...r,basePos,testPos,baseValue,testValue,total,result,totalPnlFor,totalBasisFor,totalPctFor};
   }
 
   function renderHome(){
@@ -456,11 +476,15 @@
   }
 
   function assetCard(p){
+    const s=portfolioSnapshot();
     const m=mktFor(p), value=positionValue(p), pnl=positionPnl(p), pct=positionPnlPct(p), day=m?.price_change_percentage_24h_in_currency;
+    const key=`${p.account}:${p.symbol}`, realized=s.realizedByKey[key]||0, soldCost=s.soldCost[key]||0;
+    const totalPnl=realized+pnl, totalBasis=soldCost+positionCost(p), totalPct=totalBasis?totalPnl/totalBasis*100:pct;
     return `<article class="asset-card" data-open-asset="${esc(p.symbol)}">
-      <div class="asset-head"><div class="asset-name">${esc(p.symbol)} · ${esc(p.name)}</div><span class="status-pill ${pct>=5?'good':pct<=-5?'bad':''}">${pct>=5?'IN PROFITTO':pct<=-5?'SOTTO CARICO':'IN EQUILIBRIO'}</span></div>
+      <div class="asset-head"><div class="asset-name">${esc(p.symbol)} · ${esc(p.name)}</div><span class="status-pill ${totalPct>=5?'good':totalPct<=-5?'bad':''}">${totalPct>=5?'IN PROFITTO':totalPct<=-5?'SOTTO CARICO':'IN EQUILIBRIO'}</span></div>
       <div class="asset-value">${fmtEUR(value)}</div>
-      <div class="asset-pnl ${cls(pnl)}">${fmtEUR(pnl)} · ${fmtPct(pct)}</div>
+      <div class="asset-pnl ${cls(pnl)}">Latente ${fmtEUR(pnl)} · ${fmtPct(pct)}</div>
+      ${soldCost>0?`<div class="asset-total ${cls(totalPnl)}">Totale asset ${fmtEUR(totalPnl)} · ${fmtPct(totalPct)}</div>`:''}
       <div class="asset-meta">24h <span class="${cls(num(day))}">${fmtPct(day)}</span> · prezzo ${fmtPrice(currentPrice(p))}</div>
       <div class="spark">${sparkSVG(m?.sparkline_in_7d?.price)}</div>
       <div class="tag">tocca per dettagli</div>
@@ -539,25 +563,29 @@
         <div class="summary-card"><div class="label">Liquidità Test</div><div class="big">${fmtEUR(s.cash.test)}</div><div class="sub">fondo separato</div></div>
       </div>
       <div class="section-title"><div><h2>Da questo aggiornamento</h2><p>Le operazioni qui sotto sono modificabili o eliminabili</p></div></div>
-      <div class="ops-list">${recent.length?recent.map(opCard).join(''):'<div class="empty">Nessuna nuova operazione ancora registrata.</div>'}</div>
+      <div class="ops-list">${recent.length?recent.map(op=>opCard(op,false,s)).join(''):'<div class="empty">Nessuna nuova operazione ancora registrata.</div>'}</div>
       <div class="section-title"><div><h2>Storico iniziale</h2><p>Snapshot usato per partire con i conti corretti</p></div></div>
-      <div class="ops-list">${[...BASELINE.history].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(op=>opCard(op,true)).join('')}</div>
+      <div class="ops-list">${[...BASELINE.history].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(op=>opCard(op,true,null)).join('')}</div>
     `;
   }
-  function opCard(op,locked=false){
+  function opCard(op,locked=false,snap=null){
     const clsType=op.type==='BUY'?'buy':op.type==='SELL'?'sell':'';
     const symbol=op.symbol?` · ${esc(op.symbol)}`:'';
     const qty=op.qty?`${fmtQty(num(op.qty))} ${esc(op.symbol||'')}`:'';
     const account=op.account==='test'?'Fondo Test':'Base';
+    const sale=snap&&op.type==='SELL'?(snap.sales||[]).find(x=>x.opId===op.id):null;
+    const saleLine=sale?`<div class="op-sale-line">lordo ${fmtEUR(sale.gross)} · commissione ${fmtEUR(sale.fee)} · netto ${fmtEUR(sale.net)} · P/L realizzato <span class="${cls(sale.realized)}">${fmtEUR(sale.realized)}</span></div>`:'';
     return `<article class="op-card">
-      <div class="op-top"><div><span class="op-type ${clsType}">${esc(operationLabel(op.type))}</span><div class="op-title" style="margin-top:8px">${account}${symbol}</div><div class="op-sub">${fmtDate(op.date)}${qty?` · ${qty}`:''}${op.note?` · ${esc(op.note)}`:''}</div></div><div class="op-amount">${operationAmount(op)}</div></div>
+      <div class="op-top"><div><span class="op-type ${clsType}">${esc(operationLabel(op.type))}</span><div class="op-title" style="margin-top:8px">${account}${symbol}</div><div class="op-sub">${fmtDate(op.date)}${qty?` · ${qty}`:''}${op.note?` · ${esc(op.note)}`:''}</div>${saleLine}</div><div class="op-amount">${operationAmount(op)}</div></div>
       ${locked?'':`<div class="op-actions"><button data-edit-op="${esc(op.id)}">Modifica</button><button data-delete-op="${esc(op.id)}">Elimina</button></div>`}
     </article>`;
   }
 
+
   const LESSONS = [
     ['Prezzo medio di carico','È il costo medio delle unità che possiedi. Se aggiungi una nuova quantità a un prezzo diverso, l’app ricalcola automaticamente la media.'],
-    ['P/L latente e realizzato','Latente significa guadagno o perdita sulla posizione ancora aperta. Realizzato nasce quando vendi una parte o tutta la posizione.'],
+    ['P/L latente e realizzato','Latente riguarda solo ciò che possiedi ancora. Realizzato nasce sulla parte venduta. Il risultato totale dell’asset è realizzato + latente, senza sommare due volte l’incasso.'],
+    ['Vendita parziale','L’incasso netto contiene sia capitale recuperato sia profitto o perdita. Per questo l’app separa lordo, commissione, costo di carico ceduto, P/L realizzato e costo residuo.'],
     ['24h, 7g e 30g','Sono finestre diverse. Un +4% nelle ultime 24 ore può convivere con un trend settimanale negativo: per questo il Radar mostra più orizzonti.'],
     ['Volume','Il volume indica quanto valore è stato scambiato. Un movimento di prezzo accompagnato da volume elevato è diverso da un movimento con scambi ridotti.'],
     ['Liquidità','Quando vendi una crypto, il denaro torna liquidità nel conto Base o Test. Solo quando registri un nuovo acquisto quella liquidità viene nuovamente investita.'],
@@ -578,17 +606,26 @@
     const s=portfolioSnapshot();
     const notes=[...state.notes].sort((a,b)=>new Date(b.date)-new Date(a.date));
     const realizedEntries=Object.entries(s.realized).filter(([,v])=>Math.abs(v)>0.0001);
+    const saleEvents=[...(s.sales||[])].sort((a,b)=>new Date(b.date)-new Date(a.date));
     $('#view-diary').innerHTML=`
       <div class="section-title"><div><h2>Diario</h2><p>Note, posizioni chiuse e backup dei dati</p></div><div class="right"><button class="chip-btn" data-action="new-note">＋ Nota</button></div></div>
       <div class="note-list">${notes.length?notes.map(n=>`<article class="note-card"><div class="note-top"><div><div class="op-title">${esc(n.symbol||'Generale')}</div><div class="note-sub">${fmtDate(n.date)}</div></div><button class="watch-remove" data-delete-note="${esc(n.id)}">elimina</button></div><div class="radar-reason">${esc(n.text)}</div></article>`).join(''):'<div class="empty">Nessuna nota ancora. Puoi usarle per ricordare il motivo di una scelta o cosa vuoi controllare.</div>'}</div>
 
-      <div class="section-title"><div><h2>Risultati realizzati</h2><p>Dalle operazioni registrate dopo questo aggiornamento</p></div></div>
-      <div class="closed-list">${realizedEntries.length?realizedEntries.map(([sym,v])=>`<article class="closed-card"><div class="closed-top"><div><div class="closed-title">${esc(sym)}</div><div class="closed-sub">P/L realizzato</div></div><div class="${cls(v)}" style="font-size:18px;font-weight:900">${fmtEUR(v)}</div></div></article>`).join(''):'<div class="empty">Nessun profitto o perdita realizzato registrato dalla RC1.</div>'}</div>
+      <div class="section-title"><div><h2>Vendite registrate</h2><p>Incasso, costo ceduto e profitto reale separati</p></div></div>
+      <div class="closed-list">${saleEvents.length?saleEvents.map(saleLedgerCard).join(''):'<div class="empty">Nessuna vendita registrata dopo lo snapshot iniziale.</div>'}</div>
 
-      <div class="settings-card"><h3>Backup e sicurezza dati</h3><p class="muted small">I dati manuali restano sul dispositivo. RC4 mantiene anche un punto sicurezza locale prima delle modifiche importanti.</p><div class="settings-actions"><button class="chip-btn" data-action="export">Esporta backup</button><button class="chip-btn" data-action="restore">Importa backup</button><button class="chip-btn" data-action="restore-safety">Ripristina ultimo punto</button><button class="danger-btn" data-action="reset">Ripristina RC4</button></div></div>
+      <div class="section-title"><div><h2>Risultati realizzati</h2><p>Solo profitto/perdita già cristallizzato dalle vendite, non l’intero incasso</p></div></div>
+      <div class="closed-list">${realizedEntries.length?realizedEntries.map(([sym,v])=>`<article class="closed-card"><div class="closed-top"><div><div class="closed-title">${esc(sym)}</div><div class="closed-sub">P/L realizzato cumulato</div></div><div class="${cls(v)}" style="font-size:18px;font-weight:900">${fmtEUR(v)}</div></div></article>`).join(''):'<div class="empty">Nessun profitto o perdita realizzato registrato dalla RC1.</div>'}</div>
+
+      <div class="settings-card"><h3>Backup e sicurezza dati</h3><p class="muted small">I dati manuali restano sul dispositivo. RC4.2 mantiene anche un punto sicurezza locale prima delle modifiche importanti.</p><div class="settings-actions"><button class="chip-btn" data-action="export">Esporta backup</button><button class="chip-btn" data-action="restore">Importa backup</button><button class="chip-btn" data-action="restore-safety">Ripristina ultimo punto</button><button class="danger-btn" data-action="reset">Ripristina RC4.2</button></div></div>
       <div class="settings-card"><h3>Contabilità</h3><div class="cash-details"><div class="cash-mini"><span>Capitale personale</span><b>${fmtEUR(s.ownDeposits)}</b></div><div class="cash-mini"><span>Reward accumulati</span><b>${fmtEUR(s.rewardDeposits)}</b></div><div class="cash-mini"><span>Prelievi registrati</span><b>${fmtEUR(s.withdrawals)}</b></div><div class="cash-mini"><span>Risultato reale</span><b class="${cls(s.result)}">${fmtEUR(s.result)}</b></div></div></div>
     `;
   }
+
+  function saleLedgerCard(sale){
+    return `<article class="closed-card sale-ledger"><div class="closed-top"><div><div class="closed-title">${esc(sale.symbol)} · ${fmtDate(sale.date)}</div><div class="closed-sub">Venduti ${fmtQty(sale.qtySold)} ${esc(sale.symbol)} · residuo ${fmtQty(sale.qtyAfter)}</div></div><div class="${cls(sale.realized)}" style="font-size:17px;font-weight:900">${fmtEUR(sale.realized)}</div></div><div class="sale-ledger-grid"><span>Lordo <b>${fmtEUR(sale.gross)}</b></span><span>Commissione <b>${fmtEUR(sale.fee)}</b></span><span>Netto <b>${fmtEUR(sale.net)}</b></span><span>Costo ceduto <b>${fmtEUR(sale.costRemoved)}</b></span></div></article>`;
+  }
+
 
   function renderAll(){
     renderHome(); renderRadar(); renderOps(); renderSchool(); renderDiary();
@@ -640,6 +677,13 @@
     const s=portfolioSnapshot(); const pos=s.positions.find(p=>p.symbol===a.symbol && (!a.account||p.account===a.account));
     const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; const owned=!!pos; const st=radarStatus(m);
     const pnl=owned?positionPnl(pos):0,pct=owned?positionPnlPct(pos):0;
+    const key=owned?`${pos.account}:${pos.symbol}`:'';
+    const realized=owned?(s.realizedByKey[key]||0):0;
+    const costSold=owned?(s.soldCost[key]||0):0;
+    const totalPnl=owned?realized+pnl:0;
+    const totalBasis=owned?costSold+positionCost(pos):0;
+    const totalPct=owned&&totalBasis?totalPnl/totalBasis*100:pct;
+    const assetSales=owned?(s.sales||[]).filter(x=>x.account===pos.account&&x.symbol===pos.symbol):[];
     $('#assetSheetBody').innerHTML=`
       <div class="sheet-head"><div><div class="eyebrow">${owned?(pos.account==='test'?'FONDO TEST':'POSIZIONE BASE'):'RADAR'}</div><h2>${esc(a.symbol)} · ${esc(a.name)}</h2></div><button class="ghost-btn" data-close-sheet>Chiudi</button></div>
       <div class="sheet-section">
@@ -653,19 +697,21 @@
         </div>
       </div>
       ${owned?`<div class="sheet-section"><div class="eyebrow">LA TUA POSIZIONE</div><div class="detail-grid">
-        <div class="detail-box"><span>Quantità</span><b>${fmtQty(pos.qty)} ${esc(pos.symbol)}</b></div>
+        <div class="detail-box"><span>Quantità residua</span><b>${fmtQty(pos.qty)} ${esc(pos.symbol)}</b></div>
         <div class="detail-box"><span>Prezzo medio</span><b>${fmtPrice(pos.avg)}</b></div>
-        <div class="detail-box"><span>Capitale in carico</span><b>${fmtEUR(positionCost(pos))}</b></div>
+        <div class="detail-box"><span>Costo residuo</span><b>${fmtEUR(positionCost(pos))}</b></div>
         <div class="detail-box"><span>Valore attuale</span><b>${fmtEUR(positionValue(pos))}</b></div>
-        <div class="detail-box"><span>P/L latente</span><b class="${cls(pnl)}">${fmtEUR(pnl)}</b></div>
-        <div class="detail-box"><span>P/L %</span><b class="${cls(pct)}">${fmtPct(pct)}</b></div>
-      </div><div class="detail-note" style="margin-top:10px">${positionExplanation(pos,m)}</div><div class="position-actions"><button class="chip-btn" data-action="quick-buy">＋ Acquisto</button><button class="sell-all-btn" data-action="sell-all">Vendi tutto</button></div></div>`:''}
+        <div class="detail-box"><span>P/L latente residuo</span><b class="${cls(pnl)}">${fmtEUR(pnl)}</b></div>
+        <div class="detail-box"><span>P/L latente %</span><b class="${cls(pct)}">${fmtPct(pct)}</b></div>
+        ${assetSales.length?`<div class="detail-box"><span>P/L realizzato</span><b class="${cls(realized)}">${fmtEUR(realized)}</b></div><div class="detail-box"><span>Risultato totale asset</span><b class="${cls(totalPnl)}">${fmtEUR(totalPnl)} · ${fmtPct(totalPct)}</b></div>`:''}
+      </div>${assetSales.length?`<div class="accounting-note"><b>Contabilità chiara:</b> il P/L realizzato riguarda la parte già venduta; il P/L latente riguarda solo ciò che possiedi ancora. Il totale asset è la loro somma, senza contare due volte l’incasso.</div>`:''}<div class="detail-note" style="margin-top:10px">${positionExplanation(pos,m)}</div><div class="position-actions"><button class="chip-btn" data-action="quick-buy">＋ Acquisto</button><button class="chip-btn" data-action="quick-sell">Vendi / simula</button><button class="sell-all-btn" data-action="sell-all">Vendi tutto</button></div></div>`:''}
       <div class="sheet-section"><div class="eyebrow">TREND</div><div class="range-row"><button class="range-btn" data-range="1d">24h</button><button class="range-btn active" data-range="7d">7g</button><button class="range-btn" data-range="30d">30g</button>${owned?'<button class="range-btn" data-range="since">Da acquisto</button>':''}</div><div id="detailChart" class="chart-wrap"><div class="chart-empty">Carico il trend…</div></div></div>
       <div class="sheet-section"><div class="detail-note">${radarReason(m,owned)} Gli indicatori descrivono il movimento del mercato: non eseguono ordini e non modificano Revolut.</div></div>
     `;
     $$('[data-close-sheet]').forEach(b=>b.addEventListener('click',closeSheets));
     $$('#assetSheet [data-range]').forEach(b=>b.addEventListener('click',()=>{currentRange=b.dataset.range; $$('#assetSheet [data-range]').forEach(x=>x.classList.toggle('active',x===b)); loadDetailChart(a,owned?pos:null,currentRange);}));
     const sellBtn=$('#assetSheet [data-action="sell-all"]'); if(sellBtn&&pos) sellBtn.addEventListener('click',()=>quickSellAll(pos));
+    const quickSellBtn=$('#assetSheet [data-action="quick-sell"]'); if(quickSellBtn&&pos) quickSellBtn.addEventListener('click',()=>quickSell(pos));
     const buyBtn=$('#assetSheet [data-action="quick-buy"]'); if(buyBtn&&pos) buyBtn.addEventListener('click',()=>quickBuy(pos));
     loadDetailChart(a,owned?pos:null,'7d');
   }
@@ -719,22 +765,60 @@
     closeSheets(); openOpSheet();
     $('#opType').value='SELL'; $('#opAccount').value=pos.account; populateAssetSelect($('#opAsset'),pos.symbol); $('#opQty').value=pos.qty;
     $('#opAmount').value=Math.max(0,positionValue(pos)).toFixed(2); $('#opFee').value='0'; $('#opNote').value=`Vendita totale ${pos.symbol} — sostituire l'importo stimato con quello reale Revolut`;
-    updateOpFields(); $('#opHint').textContent=`Quantità completa precompilata. L'importo ${fmtEUR(positionValue(pos))} è una stima live: inserisci l'incasso reale mostrato da Revolut prima di salvare.`;
+    updateOpFields(); $('#opHint').textContent=`Quantità completa precompilata. L’importo è una stima live: prima di salvare inserisci lordo, quantità eseguita e commissione esatti mostrati da Revolut.`;
+  }
+  function quickSell(pos){
+    closeSheets(); openOpSheet(); $('#opType').value='SELL'; $('#opAccount').value=pos.account; populateAssetSelect($('#opAsset'),pos.symbol); $('#opQty').value=''; $('#opAmount').value=''; $('#opFee').value='0'; $('#opNote').value=`Vendita parziale ${pos.symbol}`; updateOpFields();
+    $('#opHint').textContent=`Simulazione attiva: puoi scrivere prima l’importo lordo che pensi di vendere (es. 3,00 €). Se lasci vuota la quantità, la stima usa il prezzo live; dopo l’esecuzione inserisci la quantità reale prima di salvare.`;
   }
   function quickBuy(pos){
     closeSheets(); openOpSheet(); $('#opType').value='BUY'; $('#opAccount').value=pos.account; populateAssetSelect($('#opAsset'),pos.symbol); $('#opQty').value=''; $('#opAmount').value=''; $('#opFee').value='0'; $('#opNote').value=`Nuovo acquisto ${pos.symbol}`; updateOpFields();
+  }
+
+  function replayWithoutOp(editingId){
+    if(!editingId) return replay();
+    const originalOps=state.ops;
+    state.ops=state.ops.filter(x=>x.id!==editingId);
+    const snap=replay();
+    state.ops=originalOps;
+    return snap;
+  }
+
+  function updateSalePreview(){
+    const box=$('#salePreview'); if(!box) return;
+    if($('#opType').value!=='SELL'){box.hidden=true;box.innerHTML='';return;}
+    const symbol=$('#opAsset').value, account=$('#opAccount').value, editingId=$('#opId').value||null;
+    if(!symbol||symbol==='__CUSTOM__'){box.hidden=true;box.innerHTML='';return;}
+    const pre=replayWithoutOp(editingId);
+    const p=pre.positions.find(x=>x.symbol===symbol&&x.account===account);
+    if(!p){box.hidden=false;box.innerHTML='<div class="sale-preview-title">Simulatore vendita</div><div class="form-hint">Nessuna quantità disponibile su questo conto.</div>';return;}
+    const gross=num($('#opAmount').value), fee=num($('#opFee').value), typedQty=num($('#opQty').value), price=currentPrice(p);
+    const estimated=!typedQty&&gross>0&&price>0;
+    const qty=typedQty>0?typedQty:(estimated?gross/price:0);
+    if(gross<=0||qty<=0){
+      box.hidden=false; box.innerHTML=`<div class="sale-preview-title">Simulatore prima di vendere</div><div class="form-hint">Inserisci almeno l’importo lordo che stai valutando. Con il prezzo live posso stimare la quantità; dopo la vendita inserisci la quantità esatta di Revolut.</div>`; return;
+    }
+    const sold=Math.min(qty,p.qty), net=Math.max(0,gross-fee), costRemoved=sold*p.avg, realized=net-costRemoved;
+    const qtyAfter=Math.max(0,p.qty-sold), costAfter=qtyAfter*p.avg, valueAfter=qtyAfter*price, latentAfter=valueAfter-costAfter;
+    const key=`${account}:${symbol}`; const previousRealized=pre.realizedByKey?.[key]||0; const totalAsset=previousRealized+realized+latentAfter;
+    box.hidden=false;
+    box.innerHTML=`<div class="sale-preview-title">${estimated?'Stima prima di vendere':'Anteprima con quantità inserita'} · ${esc(symbol)}</div>
+      <div class="sale-preview-grid"><div><span>Lordo</span><b>${fmtEUR(gross)}</b></div><div><span>Commissione</span><b>${fmtEUR(fee)}</b></div><div><span>Netto</span><b>${fmtEUR(net)}</b></div><div><span>Costo ceduto</span><b>${fmtEUR(costRemoved)}</b></div><div><span>P/L realizzato stimato</span><b class="${cls(realized)}">${fmtEUR(realized)}</b></div><div><span>Quantità residua</span><b>${fmtQty(qtyAfter)} ${esc(symbol)}</b></div><div><span>Costo residuo</span><b>${fmtEUR(costAfter)}</b></div><div><span>Risultato asset stimato</span><b class="${cls(totalAsset)}">${fmtEUR(totalAsset)}</b></div></div>
+      <div class="sale-preview-note">${estimated?`Quantità stimata al prezzo live ${fmtPrice(price)}: ${fmtQty(sold)} ${esc(symbol)}. Non salvarla come vendita reale finché non hai la quantità eseguita da Revolut.`:`Incasso netto = lordo − commissione. Il profitto realizzato è solo netto − costo di carico delle unità vendute.`}</div>`;
   }
 
   function updateOpFields(){
     const type=$('#opType').value, assetMode=['BUY','SELL'].includes(type), transfer=type==='TRANSFER';
     $('#assetFields').hidden=!assetMode; $('#feeLabel').hidden=!assetMode; $('#toAccountLabel').hidden=!transfer;
     $('#customAssetFields').hidden=$('#opAsset').value!=='__CUSTOM__';
-    $('#amountLabel').firstChild.textContent=assetMode?'Importo crypto (€) ':transfer?'Importo da trasferire (€) ':'Importo (€) ';
+    $('#amountLabel').firstChild.textContent=type==='SELL'?'Importo vendita lordo (€) ':type==='BUY'?'Importo acquisto (€) ':transfer?'Importo da trasferire (€) ':'Importo (€) ';
     $('#opQty').required=assetMode; $('#opAsset').required=assetMode;
     const snap=portfolioSnapshot(); const acct=$('#opAccount').value; const cash=snap.cash[acct];
-    $('#opHint').textContent=assetMode?`Liquidità ${acct==='base'?'Base':'Test'} disponibile: ${fmtEUR(cash)}. Per un acquisto con nuovi soldi registra prima un versamento.`:transfer?`Il trasferimento sposta solo liquidità tra Base e Test.`:'Questa operazione aggiorna la contabilità del capitale senza modificare direttamente le posizioni.';
+    $('#opHint').textContent=type==='SELL'?`Inserisci il lordo della vendita e la commissione separatamente: l’app calcola il netto, il costo di carico ceduto e il profitto realmente realizzato.`:assetMode?`Liquidità ${acct==='base'?'Base':'Test'} disponibile: ${fmtEUR(cash)}. Per un acquisto con nuovi soldi registra prima un versamento.`:transfer?`Il trasferimento sposta solo liquidità tra Base e Test.`:'Questa operazione aggiorna la contabilità del capitale senza modificare direttamente le posizioni.';
     if(transfer) $('#opToAccount').value=acct==='base'?'test':'base';
+    updateSalePreview();
   }
+
 
   function validateOp(op,editingId){
     const testState={...state,ops:state.ops.filter(x=>x.id!==editingId)};
@@ -767,7 +851,27 @@
     const err=validateOp(op,$('#opId').value||null); if(err){toast(err);return;}
     checkpointState($('#opId').value?'Prima di modificare operazione':'Prima di nuova operazione');
     const idx=state.ops.findIndex(o=>o.id===id); if(idx>=0) state.ops[idx]=op; else state.ops.push(op);
-    saveState(); closeSheets(); renderAll(); refreshMarket(true); toast(idx>=0?'Operazione aggiornata':'Operazione salvata');
+    saveState(); closeSheets(); renderAll();
+    if(op.type==='SELL'){
+      const snap=portfolioSnapshot();
+      const sale=(snap.sales||[]).find(x=>x.opId===id);
+      if(sale) openSaleSummary(sale,snap);
+    }
+    refreshMarket(true); toast(idx>=0?'Operazione aggiornata':'Operazione salvata');
+  }
+
+  function openSaleSummary(sale,snap=portfolioSnapshot()){
+    const body=$('#saleSummaryBody'), sheet=$('#saleSummarySheet'); if(!body||!sheet) return;
+    const pos=snap.positions.find(p=>p.symbol===sale.symbol&&p.account===sale.account);
+    const key=`${sale.account}:${sale.symbol}`;
+    const realizedTotal=snap.realizedByKey?.[key]||sale.realized;
+    const latent=pos?positionPnl(pos):0;
+    const total=realizedTotal+latent;
+    body.innerHTML=`<div class="sale-summary-lead">Hai venduto <b>${fmtQty(sale.qtySold)} ${esc(sale.symbol)}</b> per <b>${fmtEUR(sale.gross)}</b> lordi. Dopo ${fmtEUR(sale.fee)} di commissione hai incassato <b>${fmtEUR(sale.net)}</b>.<br><br>Di questo incasso, <b>${fmtEUR(sale.costRemoved)}</b> corrispondono alla quota di costo/capitale delle unità cedute e <b class="${cls(sale.realized)}">${fmtEUR(sale.realized)}</b> è il P/L realmente realizzato.</div>
+      <div class="detail-grid" style="margin-top:14px"><div class="detail-box"><span>Incasso lordo</span><b>${fmtEUR(sale.gross)}</b></div><div class="detail-box"><span>Commissione</span><b>${fmtEUR(sale.fee)}</b></div><div class="detail-box"><span>Incasso netto</span><b>${fmtEUR(sale.net)}</b></div><div class="detail-box"><span>Costo di carico ceduto</span><b>${fmtEUR(sale.costRemoved)}</b></div><div class="detail-box"><span>P/L realizzato vendita</span><b class="${cls(sale.realized)}">${fmtEUR(sale.realized)}</b></div><div class="detail-box"><span>Quantità residua</span><b>${fmtQty(sale.qtyAfter)} ${esc(sale.symbol)}</b></div><div class="detail-box"><span>Costo residuo</span><b>${fmtEUR(sale.costAfter)}</b></div><div class="detail-box"><span>P/L latente residuo</span><b class="${cls(latent)}">${fmtEUR(latent)}</b></div></div>
+      <div class="sale-total-box"><span>Risultato complessivo ${esc(sale.symbol)}</span><b class="${cls(total)}">${fmtEUR(total)}</b><small>P/L realizzato cumulato ${fmtEUR(realizedTotal)} + P/L latente residuo ${fmtEUR(latent)}. L’incasso netto non viene sommato di nuovo.</small></div>`;
+    openBackdrop(sheet);
+    $$('[data-close-sheet]').forEach(b=>b.addEventListener('click',closeSheets));
   }
 
   function deleteOp(id){
@@ -825,8 +929,8 @@
     try{ const data=JSON.parse(await file.text()); if(!data?.state?.ops||!Array.isArray(data.state.ops)) throw new Error('Formato non valido'); checkpointState('Prima di importare backup'); state={...defaultState(),...data.state,opportunity:{...defaultState().opportunity,...(data.state.opportunity||{})}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll();refreshMarket(true);toast('Backup importato'); }catch(_){toast('Backup non valido');}
   }
   function resetState(){
-    if(!confirm('Ripristinare i dati iniziali RC4? Le operazioni e note manuali verranno eliminate.')) return;
-    checkpointState('Prima del ripristino RC4'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC4 ripristinata');
+    if(!confirm('Ripristinare i dati iniziali RC4.2? Le operazioni e note manuali verranno eliminate.')) return;
+    checkpointState('Prima del ripristino RC4'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC4.2 ripristinata');
   }
 
   function wantedIds(){
@@ -914,7 +1018,7 @@
     $('.nav-main').addEventListener('click',()=>openOpSheet());
     $('#refreshBtn').addEventListener('click',()=>{refreshMarket(true);scanOpportunities(false);});
     $('#sheetBackdrop').addEventListener('click',closeSheets); $$('[data-close-sheet]').forEach(b=>b.addEventListener('click',closeSheets));
-    $('#opType').addEventListener('change',updateOpFields); $('#opAccount').addEventListener('change',updateOpFields); $('#opAsset').addEventListener('change',updateOpFields); $('#opForm').addEventListener('submit',saveOperation); $('#noteForm').addEventListener('submit',saveNote);
+    $('#opType').addEventListener('change',updateOpFields); $('#opAccount').addEventListener('change',updateOpFields); $('#opAsset').addEventListener('change',updateOpFields); $('#opQty').addEventListener('input',updateSalePreview); $('#opAmount').addEventListener('input',updateSalePreview); $('#opFee').addEventListener('input',updateSalePreview); $('#opForm').addEventListener('submit',saveOperation); $('#noteForm').addEventListener('submit',saveNote);
     $('#watchSearch').addEventListener('input',e=>{clearTimeout(watchSearchTimer);const q=e.target.value;watchSearchTimer=setTimeout(()=>searchWatch(q),350);});
     $('#restoreInput').addEventListener('change',e=>{const f=e.target.files?.[0];if(f)restoreBackup(f);e.target.value='';});
     document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){if(Date.now()-num(state.marketCache?.time)>45000)refreshMarket(true);scanOpportunities(false);}});

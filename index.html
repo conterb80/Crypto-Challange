@@ -9,14 +9,14 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=2.4.1">
+  <link rel="stylesheet" href="style.css?v=2.4.2">
   <title>Crypto Conte</title>
 </head>
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">SALA CONTROLLO · RC4.1</div>
+        <div class="eyebrow">SALA CONTROLLO · RC4.2</div>
         <h1>Crypto Conte</h1>
         <div id="dataStatus" class="data-status"><span class="dot"></span><span>caricamento dati…</span></div>
       </div>
@@ -103,8 +103,19 @@
         <input id="opNote" maxlength="120" placeholder="es. vendita PEPE e rotazione su…">
       </label>
       <div id="opHint" class="form-hint full"></div>
+      <div id="salePreview" class="sale-preview full" hidden></div>
       <button class="primary-btn full" type="submit">Salva operazione</button>
     </form>
+  </section>
+
+
+  <section id="saleSummarySheet" class="sheet" aria-modal="true" role="dialog" hidden>
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <div><div class="eyebrow">CONTABILITÀ VENDITA</div><h2>Vendita registrata</h2></div>
+      <button class="ghost-btn" data-close-sheet>Chiudi</button>
+    </div>
+    <div id="saleSummaryBody"></div>
   </section>
 
   <section id="watchSheet" class="sheet" aria-modal="true" role="dialog" hidden>
@@ -145,6 +156,6 @@
 
   <input id="restoreInput" type="file" accept="application/json" hidden>
 
-  <script src="app.js?v=2.4.1"></script>
+  <script src="app.js?v=2.4.2"></script>
 </body>
 </html>

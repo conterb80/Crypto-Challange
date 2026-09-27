@@ -1,17 +1,23 @@
-CRYPTO CONTE RC4.1 — RADAR PULITO E DIDATTICO
+CRYPTO CONTE RC4.2 · CONTABILITÀ VENDITE
 
-Obiettivo: ridurre il rumore senza perdere informazioni.
+Questa versione parte dalla RC4.1 stabile e interviene soprattutto sulla gestione delle vendite parziali.
 
-NOVITÀ RC4.1
-- Radar: niente duplicazione delle posizioni già presenti nella Sala.
-- La mia Watchlist: solo crypto scelte dall’utente.
-- Semaforo Watchlist: OSSERVA / PREPARATI / POSSIBILE INGRESSO / NON INSEGUIRE.
-- Ogni stato ha una breve spiegazione in italiano semplice.
-- “Cosa sarebbe successo?” ora usa card compatte a scomparsa.
-- Dettaglio espandibile con spiegazione semplice, indicatori tecnici e risultato 24h/48h.
-- Un solo segnale attivo per crypto: niente duplicati continui.
-- Segnali conclusi dopo 48h spostati visivamente nell’Archivio.
-- Il motore di scansione RC3 resta invariato: questa release privilegia chiarezza e didattica.
+NOVITÀ PRINCIPALI
+- vendita parziale con anteprima live prima del salvataggio
+- distinzione chiara tra lordo, commissione e incasso netto
+- calcolo automatico del costo di carico ceduto
+- P/L realizzato della sola parte venduta
+- quantità e costo residuo della posizione
+- P/L latente della parte ancora aperta
+- risultato complessivo asset = realizzato + latente, senza doppio conteggio dell'incasso
+- riepilogo automatico dopo ogni vendita
+- sezione Diario > Vendite registrate con dettaglio contabile
+- dettaglio crypto con realizzato, latente e totale asset quando esistono vendite
+- pulsante "Vendi / simula" nella scheda della posizione
 
-NOTA
-Gli stati del Radar e della Watchlist sono strumenti didattici di monitoraggio, non ordini automatici di acquisto o vendita.
+DATI
+Mantiene lo stesso localStorage cryptoConte.v2.state, quindi conserva i dati della RC4.1.
+Prima dell'aggiornamento è comunque consigliato Esporta backup dal Diario.
+
+IMPORTANTE
+L'app non modifica Revolut e non esegue ordini. Dopo una vendita reale inserire sempre quantità eseguita, importo lordo e commissione esatti mostrati da Revolut.

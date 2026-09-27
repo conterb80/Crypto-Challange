@@ -1,0 +1,31 @@
+TEST RAPIDO RC4.2
+
+1) Avvio
+- l'app deve aprirsi normalmente e mostrare RC4.2.
+
+2) Vendita NEAR già effettuata
+Controlla Operazioni -> vendita NEAR del 27/09/2026.
+Valori di riferimento:
+- acquisto iniziale: 15,00 €
+- quantità iniziale: 3,99129 NEAR
+- prezzo medio: 3,7581 €
+- vendita: 0,66937 NEAR
+- lordo: 3,00 €
+- commissione: 0,01 €
+- netto: 2,99 €
+- costo di carico ceduto: circa 2,52 €
+- P/L realizzato: circa +0,47 €
+- quantità residua: 3,32192 NEAR
+- costo residuo: circa 12,48 €
+
+3) Simulatore
+Apri NEAR -> Vendi / simula.
+Scrivi 3,00 € come importo lordo e 0,01 € di commissione lasciando inizialmente vuota la quantità.
+L'app deve mostrare una stima senza salvare nulla.
+
+4) Vendita reale
+Prima di salvare una vendita reale inserisci sempre la quantità eseguita esatta di Revolut.
+Dopo Salva deve aprirsi il riepilogo con lordo, commissione, netto, costo ceduto, P/L realizzato, residuo, P/L latente e risultato totale asset.
+
+5) Diario
+In Diario -> Vendite registrate deve comparire il dettaglio della vendita senza confondere incasso netto e profitto.

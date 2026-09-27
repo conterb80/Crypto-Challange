@@ -1,0 +1,17 @@
+AGGIORNAMENTO RC4.1 -> RC4.2
+
+1. In RC4.1: Diario -> Esporta backup.
+2. Sostituisci tutti i file dell'app con quelli della RC4.2.
+3. Chiudi completamente la PWA e riaprila.
+4. Verifica che in alto compaia "RC4.2".
+5. Vai in Operazioni e controlla la vendita NEAR già registrata.
+
+Per la vendita NEAR del 27/09/2026 i dati corretti di riferimento sono:
+- quantità venduta: 0,66937 NEAR
+- importo vendita LORDO: 3,00 €
+- commissione: 0,01 €
+- incasso NETTO: 2,99 €
+- prezzo medio precedente: 3,7581 €
+- residuo: 3,32192 NEAR
+
+Se la vecchia operazione NEAR contiene un importo diverso perché il campo della RC4.1 non era abbastanza chiaro, usa Modifica e inserisci i valori sopra. Non creare una seconda vendita duplicata.

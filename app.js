@@ -608,7 +608,7 @@
     const realizedEntries=Object.entries(s.realized).filter(([,v])=>Math.abs(v)>0.0001);
     const saleEvents=[...(s.sales||[])].sort((a,b)=>new Date(b.date)-new Date(a.date));
     $('#view-diary').innerHTML=`
-      <div class="section-title"><div><h2>Diario</h2><p>Note, posizioni chiuse e backup dei dati</p></div><div class="right"><button class="chip-btn" data-action="new-note">＋ Nota</button></div></div>
+      <div class="section-title"><div><h2>Diario</h2><p>Note, vendite, operazioni e backup dei dati</p></div><div class="right"><button class="chip-btn" data-action="manage-ops">Gestisci operazioni</button><button class="chip-btn" data-action="new-note">＋ Nota</button></div></div>
       <div class="note-list">${notes.length?notes.map(n=>`<article class="note-card"><div class="note-top"><div><div class="op-title">${esc(n.symbol||'Generale')}</div><div class="note-sub">${fmtDate(n.date)}</div></div><button class="watch-remove" data-delete-note="${esc(n.id)}">elimina</button></div><div class="radar-reason">${esc(n.text)}</div></article>`).join(''):'<div class="empty">Nessuna nota ancora. Puoi usarle per ricordare il motivo di una scelta o cosa vuoi controllare.</div>'}</div>
 
       <div class="section-title"><div><h2>Vendite registrate</h2><p>Incasso, costo ceduto e profitto reale separati</p></div></div>
@@ -623,7 +623,8 @@
   }
 
   function saleLedgerCard(sale){
-    return `<article class="closed-card sale-ledger"><div class="closed-top"><div><div class="closed-title">${esc(sale.symbol)} · ${fmtDate(sale.date)}</div><div class="closed-sub">Venduti ${fmtQty(sale.qtySold)} ${esc(sale.symbol)} · residuo ${fmtQty(sale.qtyAfter)}</div></div><div class="${cls(sale.realized)}" style="font-size:17px;font-weight:900">${fmtEUR(sale.realized)}</div></div><div class="sale-ledger-grid"><span>Lordo <b>${fmtEUR(sale.gross)}</b></span><span>Commissione <b>${fmtEUR(sale.fee)}</b></span><span>Netto <b>${fmtEUR(sale.net)}</b></span><span>Costo ceduto <b>${fmtEUR(sale.costRemoved)}</b></span></div></article>`;
+    const editable=(state.ops||[]).some(op=>op.id===sale.opId);
+    return `<article class="closed-card sale-ledger"><div class="closed-top"><div><div class="closed-title">${esc(sale.symbol)} · ${fmtDate(sale.date)}</div><div class="closed-sub">Venduti ${fmtQty(sale.qtySold)} ${esc(sale.symbol)} · residuo ${fmtQty(sale.qtyAfter)}</div></div><div class="${cls(sale.realized)}" style="font-size:17px;font-weight:900">${fmtEUR(sale.realized)}</div></div><div class="sale-ledger-grid"><span>Lordo <b>${fmtEUR(sale.gross)}</b></span><span>Commissione <b>${fmtEUR(sale.fee)}</b></span><span>Netto <b>${fmtEUR(sale.net)}</b></span><span>Costo ceduto <b>${fmtEUR(sale.costRemoved)}</b></span></div>${editable?`<div class="op-actions"><button data-edit-op="${esc(sale.opId)}">Modifica vendita</button></div>`:''}</article>`;
   }
 
 
@@ -641,6 +642,7 @@
     $$('[data-action="scan-opportunities"]').forEach(b=>b.addEventListener('click',()=>scanOpportunities(true)));
     $$('[data-edit-op]').forEach(b=>b.addEventListener('click',()=>openOpSheet(state.ops.find(o=>o.id===b.dataset.editOp))));
     $$('[data-delete-op]').forEach(b=>b.addEventListener('click',()=>deleteOp(b.dataset.deleteOp)));
+    $$('[data-action="manage-ops"]').forEach(b=>b.addEventListener('click',()=>showView('ops')));
     $$('[data-action="new-note"]').forEach(b=>b.addEventListener('click',openNoteSheet));
     $$('[data-delete-note]').forEach(b=>b.addEventListener('click',()=>{checkpointState('Prima di eliminare nota');state.notes=state.notes.filter(n=>n.id!==b.dataset.deleteNote);saveState();renderDiary();bindDynamic();toast('Nota eliminata');}));
     $$('[data-action="export"]').forEach(b=>b.addEventListener('click',exportBackup));
@@ -929,7 +931,7 @@
     try{ const data=JSON.parse(await file.text()); if(!data?.state?.ops||!Array.isArray(data.state.ops)) throw new Error('Formato non valido'); checkpointState('Prima di importare backup'); state={...defaultState(),...data.state,opportunity:{...defaultState().opportunity,...(data.state.opportunity||{})}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll();refreshMarket(true);toast('Backup importato'); }catch(_){toast('Backup non valido');}
   }
   function resetState(){
-    if(!confirm('Ripristinare i dati iniziali RC4.2? Le operazioni e note manuali verranno eliminate.')) return;
+    if(!confirm('Ripristinare i dati iniziali RC4.2.1? Le operazioni e note manuali verranno eliminate.')) return;
     checkpointState('Prima del ripristino RC4'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC4.2 ripristinata');
   }
 

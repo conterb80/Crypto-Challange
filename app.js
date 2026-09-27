@@ -272,7 +272,7 @@
   }
 
 
-  function candidateTone(status){ return status==='INTERESSANTE'?'good':status==='NON INSEGUIRE'?'warn':''; }
+  function candidateTone(status){ return ({'POSSIBILE INGRESSO':'ready','PREPARATI':'prepare','OSSERVA':'observe','NON INSEGUIRE':'stop','INTERESSANTE':'prepare'})[status]||''; }
   function watchDecision(m){
     const btc=market.bitcoin||{};
     const h=num(m?.price_change_percentage_1h_in_currency), d=num(m?.price_change_percentage_24h_in_currency), w=num(m?.price_change_percentage_7d_in_currency);
@@ -312,7 +312,9 @@
       if(p<=-2) return {label:'IN VERIFICA −',tone:'stop'};
       return {label:'IN VERIFICA',tone:'prepare'};
     }
-    return sig.status==='INTERESSANTE'?{label:'PREPARATI',tone:'prepare'}:{label:'OSSERVA',tone:'observe'};
+    const current=sig.latestStatus||sig.status;
+    if(['POSSIBILE INGRESSO','PREPARATI','OSSERVA','NON INSEGUIRE'].includes(current)) return {label:current,tone:candidateTone(current)};
+    return current==='INTERESSANTE'?{label:'PREPARATI',tone:'prepare'}:{label:'OSSERVA',tone:'observe'};
   }
   function signalOutcomeSentence(o,label){
     if(!o) return `${label}: in attesa`;
@@ -376,11 +378,13 @@
     if(breakout) score+=2;
     if(trending) score+=1;
     if(d<=-5||rel24<=-4) score-=2;
-    let status=null;
-    if(overextended&&(d>=8||h>=4.5)) status='NON INSEGUIRE';
-    else if(score>=7&&d>0&&rel24>0) status='INTERESSANTE';
-    else if(score>=4) status='OSSERVA';
-    if(!status) return null;
+    let detected=null;
+    if(overextended&&(d>=8||h>=4.5)) detected='NON INSEGUIRE';
+    else if(score>=7&&d>0&&rel24>0) detected='INTERESSANTE';
+    else if(score>=4) detected='OSSERVA';
+    if(!detected) return null;
+    const decision=watchDecision(x);
+    const status=detected==='NON INSEGUIRE'?'NON INSEGUIRE':decision.label;
     const reasons=[];
     if(volDelta!=null&&volDelta>=10) reasons.push(`volume in aumento ${fmtPct(volDelta)}`); else if(volRatio>=.18) reasons.push('volume molto attivo');
     if(scanMove!=null&&scanMove>=.30&&scanMove<=3.5) reasons.push(`accelerazione scan ${fmtPct(scanMove)}`);
@@ -390,7 +394,7 @@
     else if(breakout) reasons.push('tentativo di breakout');
     if(trending) reasons.push('interesse CoinGecko in aumento');
     if(overextended) reasons.unshift('movimento già molto esteso');
-    return {...x,symbol:String(x.symbol||'').toUpperCase(),status,tone:candidateTone(status),score,reason:reasons.slice(0,4).join(' · ')||'movimento da osservare',rel24,rel7,volRatio,volDelta,scanMove,range24,nearHigh,breakout,trending};
+    return {...x,symbol:String(x.symbol||'').toUpperCase(),status,tone:candidateTone(status),score,reason:reasons.slice(0,4).join(' · ')||'movimento da osservare',decisionReason:decision.reason,rel24,rel7,volRatio,volDelta,scanMove,range24,nearHigh,breakout,trending};
   }
 
   function updateSignalOutcomes(rows){
@@ -406,7 +410,7 @@
   }
   function recordOpportunitySignals(candidates){
     const now=Date.now(); const signals=normalizeOpportunitySignals(state.opportunity.signals||[]);
-    candidates.filter(c=>c.status==='INTERESSANTE'||c.status==='OSSERVA').forEach(c=>{
+    candidates.filter(c=>['POSSIBILE INGRESSO','PREPARATI','OSSERVA','NON INSEGUIRE','INTERESSANTE'].includes(c.status)).forEach(c=>{
       const active=[...signals].reverse().find(s=>s.id===c.id&&!s.outcome48);
       if(active){
         active.latestStatus=c.status; active.reasonLatest=c.reason; active.lastSeen=now;
@@ -518,7 +522,7 @@
             <div class="metric"><span>vs BTC 24h</span><b class="${cls(num(c.rel24))}">${fmtPct(c.rel24)}</b></div>
           </div>
           <div class="spark">${sparkSVG(c.sparkline_in_7d?.price)}</div>
-          <div class="radar-reason"><b>Perché lo sto guardando:</b> ${esc(c.reason)}</div>
+          <div class="radar-reason"><b>Lettura:</b> ${esc(c.decisionReason||watchDecision(c).reason)}<br><b>Perché lo sto guardando:</b> ${esc(c.reason)}</div>
           ${!owned&&!watched?`<div class="opportunity-actions"><button data-watch-candidate="${esc(c.id)}">＋ Aggiungi alla watchlist</button></div>`:''}
         </article>`;
       }).join(''):'<div class="empty">Nessun segnale abbastanza pulito nell’ultima scansione. Il Radar continuerà a controllare automaticamente.</div>'}</div>
@@ -980,7 +984,7 @@
       const detailMap=new Map(detailRows.map(x=>[x.id,x]));
       const candidatePool=[...new Map([...screened.map(x=>[x.id,detailMap.get(x.id)||x]),...detailRows.map(x=>[x.id,x])]).values()];
       const assessed=candidatePool.filter(x=>x.id!=='bitcoin'&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000).map(x=>analyzeOpportunity(x,btc,prev[x.id],trendingIds)).filter(Boolean);
-      assessed.sort((a,b)=>{const rank={INTERESSANTE:3,OSSERVA:2,'NON INSEGUIRE':1};return (rank[b.status]-rank[a.status])||(b.score-a.score)||(num(b.total_volume)-num(a.total_volume));});
+      assessed.sort((a,b)=>{const rank={'POSSIBILE INGRESSO':4,PREPARATI:3,INTERESSANTE:3,OSSERVA:2,'NON INSEGUIRE':1};return ((rank[b.status]||0)-(rank[a.status]||0))||(b.score-a.score)||(num(b.total_volume)-num(a.total_volume));});
       const candidates=assessed.slice(0,5);
       const now=Date.now(),nextPrev={}; rows.forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)}); detailRows.forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)});
       updateSignalOutcomes(detailRows.length?detailRows:rows); state.opportunity={...opp,time:now,candidates,prev:nextPrev,trending:[...trendingIds],signals:state.opportunity.signals||[]}; recordOpportunitySignals(candidates);

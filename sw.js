@@ -1,5 +1,5 @@
-const CACHE = 'crypto-conte-rc421-20260927-v1';
-const APP = ['./','index.html','style.css?v=2.4.21','app.js?v=2.4.21','manifest.json','icon-192.png','icon-512.png'];
+const CACHE = 'crypto-conte-rc422-20260927-v1';
+const APP = ['./','index.html','style.css?v=2.4.22','app.js?v=2.4.22','manifest.json','icon-192.png','icon-512.png'];
 self.addEventListener('install', e => { self.skipWaiting(); e.waitUntil(caches.open(CACHE).then(c=>c.addAll(APP))); });
 self.addEventListener('activate', e => { e.waitUntil((async()=>{ for (const k of await caches.keys()) if(k!==CACHE) await caches.delete(k); await self.clients.claim(); })()); });
 self.addEventListener('fetch', e => {

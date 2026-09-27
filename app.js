@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.4.2';
+  const VERSION = '2.4.3';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 90 * 1000;
   const AUTO_REFRESH_MS = 150 * 1000;
@@ -510,11 +510,12 @@
     };
     $('#view-radar').innerHTML=`
       <div class="section-title"><div><h2>Radar Opportunità</h2><p>Scansione automatica del mercato ogni 15 minuti · ultimo scan ${scanTime}</p></div><div class="right"><button class="chip-btn" data-action="scan-opportunities">◎ Scansiona</button></div></div>
-      <div class="radar-explain"><b>Cosa cerca:</b> volume e sua accelerazione, momentum, forza rispetto a BTC, compressione/breakout e interesse di mercato. Mostra pochi candidati per capire <i>perché</i> meritano attenzione: non sono ordini di acquisto.</div>
-      <div class="opportunity-list">${(opp.candidates||[]).length?(opp.candidates||[]).map(c=>{
+      <div class="radar-explain"><b>Cosa cerca:</b> volume e sua accelerazione, momentum, forza rispetto a BTC, compressione/breakout e interesse di mercato. Mostra al massimo 3 nuove opportunità non già possedute: la prima è il candidato principale, le altre restano secondarie. Non sono ordini di acquisto.</div>
+      <div class="opportunity-list">${(opp.candidates||[]).length?(opp.candidates||[]).map((c,i)=>{
         const owned=ownedSymbols.has(c.symbol), watched=isWatched(c);
+        const origin=watched?'SEGNALATA · GIÀ IN WATCHLIST':i===0?'CANDIDATO PRINCIPALE':'SEGNALAZIONE RADAR';
         return `<article class="opportunity-card" data-open-asset="${esc(c.symbol)}">
-          <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${owned?'SEGNALATA · GIÀ IN PORTAFOGLIO':watched?'SEGNALATA · GIÀ IN WATCHLIST':'SCANSIONE AUTOMATICA'}</div></div><span class="status-pill ${c.tone||candidateTone(c.status)}">${esc(c.status)}</span></div>
+          <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${origin}</div></div><span class="status-pill ${c.tone||candidateTone(c.status)}">${esc(c.status)}</span></div>
           <div class="radar-grid">
             <div class="metric"><span>Prezzo</span><b>${fmtPrice(num(c.current_price))}</b></div>
             <div class="metric"><span>1h</span><b class="${cls(num(c.price_change_percentage_1h_in_currency))}">${fmtPct(c.price_change_percentage_1h_in_currency)}</b></div>
@@ -555,6 +556,7 @@
     if(op.type==='BUY') return `−${fmtEUR(num(op.amount)+num(op.fee))}`;
     if(op.type==='SELL') return `+${fmtEUR(num(op.amount)-num(op.fee))}`;
     if(op.type==='WITHDRAW') return `−${fmtEUR(num(op.amount))}`;
+    if(op.type==='TRANSFER') return fmtEUR(num(op.amount));
     return fmtEUR(num(op.amount));
   }
   function renderOps(){
@@ -577,10 +579,12 @@
     const symbol=op.symbol?` · ${esc(op.symbol)}`:'';
     const qty=op.qty?`${fmtQty(num(op.qty))} ${esc(op.symbol||'')}`:'';
     const account=op.account==='test'?'Fondo Test':'Base';
+    const toAccount=op.toAccount==='test'?'Fondo Test':'Base';
+    const title=op.type==='TRANSFER'?`${account} → ${toAccount}`:`${account}${symbol}`;
     const sale=snap&&op.type==='SELL'?(snap.sales||[]).find(x=>x.opId===op.id):null;
     const saleLine=sale?`<div class="op-sale-line">lordo ${fmtEUR(sale.gross)} · commissione ${fmtEUR(sale.fee)} · netto ${fmtEUR(sale.net)} · P/L realizzato <span class="${cls(sale.realized)}">${fmtEUR(sale.realized)}</span></div>`:'';
     return `<article class="op-card">
-      <div class="op-top"><div><span class="op-type ${clsType}">${esc(operationLabel(op.type))}</span><div class="op-title" style="margin-top:8px">${account}${symbol}</div><div class="op-sub">${fmtDate(op.date)}${qty?` · ${qty}`:''}${op.note?` · ${esc(op.note)}`:''}</div>${saleLine}</div><div class="op-amount">${operationAmount(op)}</div></div>
+      <div class="op-top"><div><span class="op-type ${clsType}">${esc(operationLabel(op.type))}</span><div class="op-title" style="margin-top:8px">${title}</div><div class="op-sub">${fmtDate(op.date)}${qty?` · ${qty}`:''}${op.note?` · ${esc(op.note)}`:''}</div>${saleLine}</div><div class="op-amount">${operationAmount(op)}</div></div>
       ${locked?'':`<div class="op-actions"><button data-edit-op="${esc(op.id)}">Modifica</button><button data-delete-op="${esc(op.id)}">Elimina</button></div>`}
     </article>`;
   }
@@ -792,8 +796,32 @@
 
   function updateSalePreview(){
     const box=$('#salePreview'); if(!box) return;
-    if($('#opType').value!=='SELL'){box.hidden=true;box.innerHTML='';return;}
-    const symbol=$('#opAsset').value, account=$('#opAccount').value, editingId=$('#opId').value||null;
+    const type=$('#opType').value;
+    const editingId=$('#opId').value||null;
+
+    if(type==='TRANSFER'){
+      const pre=replayWithoutOp(editingId);
+      const from=$('#opAccount').value;
+      const to=$('#opToAccount').value;
+      const amount=num($('#opAmount').value);
+      const fromName=from==='base'?'Base':'Fondo Test';
+      const toName=to==='base'?'Base':'Fondo Test';
+      const fromCash=num(pre.cash[from]);
+      const toCash=num(pre.cash[to]);
+      box.hidden=false;
+      if(amount<=0){
+        box.innerHTML=`<div class="sale-preview-title">Anteprima trasferimento</div><div class="form-hint">Scegli il conto di partenza e inserisci l’importo. Il trasferimento sposta solo liquidità: non compra né vende crypto.</div>`;
+        return;
+      }
+      const enough=amount<=fromCash+1e-8;
+      box.innerHTML=`<div class="sale-preview-title">${esc(fromName)} → ${esc(toName)}</div>
+        <div class="sale-preview-grid"><div><span>${esc(fromName)} prima</span><b>${fmtEUR(fromCash)}</b></div><div><span>${esc(fromName)} dopo</span><b class="${enough?'':'neg'}">${fmtEUR(fromCash-amount)}</b></div><div><span>${esc(toName)} prima</span><b>${fmtEUR(toCash)}</b></div><div><span>${esc(toName)} dopo</span><b>${fmtEUR(toCash+amount)}</b></div></div>
+        <div class="sale-preview-note">${enough?`Dopo il salvataggio avrai ${fmtEUR(fromCash-amount)} in ${esc(fromName)} e ${fmtEUR(toCash+amount)} in ${esc(toName)}. Nessun capitale viene creato o perso: cambia solo il contenitore della liquidità.`:`Importo superiore alla liquidità disponibile in ${esc(fromName)}.`}</div>`;
+      return;
+    }
+
+    if(type!=='SELL'){box.hidden=true;box.innerHTML='';return;}
+    const symbol=$('#opAsset').value, account=$('#opAccount').value;
     if(!symbol||symbol==='__CUSTOM__'){box.hidden=true;box.innerHTML='';return;}
     const pre=replayWithoutOp(editingId);
     const p=pre.positions.find(x=>x.symbol===symbol&&x.account===account);
@@ -816,12 +844,18 @@
   function updateOpFields(){
     const type=$('#opType').value, assetMode=['BUY','SELL'].includes(type), transfer=type==='TRANSFER';
     $('#assetFields').hidden=!assetMode; $('#feeLabel').hidden=!assetMode; $('#toAccountLabel').hidden=!transfer;
-    $('#customAssetFields').hidden=$('#opAsset').value!=='__CUSTOM__';
+    $('#customAssetFields').hidden=!assetMode || $('#opAsset').value!=='__CUSTOM__';
     $('#amountLabel').firstChild.textContent=type==='SELL'?'Importo vendita lordo (€) ':type==='BUY'?'Importo acquisto (€) ':transfer?'Importo da trasferire (€) ':'Importo (€) ';
     $('#opQty').required=assetMode; $('#opAsset').required=assetMode;
+    if($('#accountLabelText')) $('#accountLabelText').textContent=transfer?'Da':'Conto';
     const snap=portfolioSnapshot(); const acct=$('#opAccount').value; const cash=snap.cash[acct];
-    $('#opHint').textContent=type==='SELL'?`Inserisci il lordo della vendita e la commissione separatamente: l’app calcola il netto, il costo di carico ceduto e il profitto realmente realizzato.`:assetMode?`Liquidità ${acct==='base'?'Base':'Test'} disponibile: ${fmtEUR(cash)}. Per un acquisto con nuovi soldi registra prima un versamento.`:transfer?`Il trasferimento sposta solo liquidità tra Base e Test.`:'Questa operazione aggiorna la contabilità del capitale senza modificare direttamente le posizioni.';
-    if(transfer) $('#opToAccount').value=acct==='base'?'test':'base';
+    if(transfer){
+      $('#opToAccount').value=acct==='base'?'test':'base';
+      $('#opToAccount').disabled=true;
+    }else{
+      $('#opToAccount').disabled=false;
+    }
+    $('#opHint').textContent=type==='SELL'?`Inserisci il lordo della vendita e la commissione separatamente: l’app calcola il netto, il costo di carico ceduto e il profitto realmente realizzato.`:assetMode?`Liquidità ${acct==='base'?'Base':'Test'} disponibile: ${fmtEUR(cash)}. Per un acquisto con nuovi soldi registra prima un versamento.`:transfer?`Liquidità disponibile in ${acct==='base'?'Base':'Fondo Test'}: ${fmtEUR(cash)}. La destinazione viene impostata automaticamente sul conto opposto.`:'Questa operazione aggiorna la contabilità del capitale senza modificare direttamente le posizioni.';
     updateSalePreview();
   }
 
@@ -838,22 +872,33 @@
       if(!p||p.qty+1e-12<qty) return `Quantità ${op.symbol} insufficiente nel ${account==='base'?'Portafoglio Base':'Fondo Test'}.`;
     }
     if(op.type==='WITHDRAW' && snap.cash[account]+1e-8<amount) return 'Liquidità insufficiente per il prelievo.';
-    if(op.type==='TRANSFER' && snap.cash[account]+1e-8<amount) return 'Liquidità insufficiente per il trasferimento.';
+    if(op.type==='TRANSFER'){
+      const to=op.toAccount;
+      if(!['base','test'].includes(to) || to===account) return 'Il trasferimento deve avvenire tra Base e Fondo Test.';
+      if(snap.cash[account]+1e-8<amount) return `Liquidità ${account==='base'?'Base':'Test'} insufficiente per il trasferimento.`;
+    }
     return '';
   }
 
   function saveOperation(e){
     e.preventDefault();
-    let symbol=$('#opAsset').value, name='', assetId='';
-    if(symbol==='__CUSTOM__'){
-      symbol=$('#customSymbol').value.trim().toUpperCase(); name=$('#customName').value.trim(); assetId=$('#customId').value.trim();
-      if(!symbol||!name||!assetId){toast('Completa sigla, nome e CoinGecko ID');return;}
-      if(!state.customAssets.some(a=>a.symbol===symbol)) state.customAssets.push({symbol,name,id:assetId});
-    }else{
-      const a=assetBySymbol(symbol); name=a?.name||symbol; assetId=a?.id||symbol.toLowerCase();
+    const type=$('#opType').value;
+    const assetMode=['BUY','SELL'].includes(type);
+    let symbol='', name='', assetId='';
+    if(assetMode){
+      symbol=$('#opAsset').value;
+      if(symbol==='__CUSTOM__'){
+        symbol=$('#customSymbol').value.trim().toUpperCase(); name=$('#customName').value.trim(); assetId=$('#customId').value.trim();
+        if(!symbol||!name||!assetId){toast('Completa sigla, nome e CoinGecko ID');return;}
+        if(!state.customAssets.some(a=>a.symbol===symbol)) state.customAssets.push({symbol,name,id:assetId});
+      }else{
+        const a=assetBySymbol(symbol); name=a?.name||symbol; assetId=a?.id||symbol.toLowerCase();
+      }
     }
     const id=$('#opId').value||uid();
-    const op={id,type:$('#opType').value,account:$('#opAccount').value,toAccount:$('#opToAccount').value,symbol,name,assetId,qty:num($('#opQty').value),amount:num($('#opAmount').value),fee:num($('#opFee').value),date:$('#opDate').value,note:$('#opNote').value.trim()};
+    const account=$('#opAccount').value;
+    const toAccount=type==='TRANSFER'?(account==='base'?'test':'base'):$('#opToAccount').value;
+    const op={id,type,account,toAccount,symbol,name,assetId,qty:assetMode?num($('#opQty').value):0,amount:num($('#opAmount').value),fee:assetMode?num($('#opFee').value):0,date:$('#opDate').value,note:$('#opNote').value.trim()};
     const err=validateOp(op,$('#opId').value||null); if(err){toast(err);return;}
     checkpointState($('#opId').value?'Prima di modificare operazione':'Prima di nuova operazione');
     const idx=state.ops.findIndex(o=>o.id===id); if(idx>=0) state.ops[idx]=op; else state.ops.push(op);
@@ -863,7 +908,14 @@
       const sale=(snap.sales||[]).find(x=>x.opId===id);
       if(sale) openSaleSummary(sale,snap);
     }
-    refreshMarket(true); toast(idx>=0?'Operazione aggiornata':'Operazione salvata');
+    refreshMarket(true);
+    if(op.type==='TRANSFER'){
+      const from=op.account==='base'?'Base':'Fondo Test';
+      const to=op.toAccount==='base'?'Base':'Fondo Test';
+      toast(`${fmtEUR(op.amount)} trasferiti: ${from} → ${to}`);
+    }else{
+      toast(idx>=0?'Operazione aggiornata':'Operazione salvata');
+    }
   }
 
   function openSaleSummary(sale,snap=portfolioSnapshot()){
@@ -935,8 +987,8 @@
     try{ const data=JSON.parse(await file.text()); if(!data?.state?.ops||!Array.isArray(data.state.ops)) throw new Error('Formato non valido'); checkpointState('Prima di importare backup'); state={...defaultState(),...data.state,opportunity:{...defaultState().opportunity,...(data.state.opportunity||{})}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll();refreshMarket(true);toast('Backup importato'); }catch(_){toast('Backup non valido');}
   }
   function resetState(){
-    if(!confirm('Ripristinare i dati iniziali RC4.2.1? Le operazioni e note manuali verranno eliminate.')) return;
-    checkpointState('Prima del ripristino RC4'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC4.2 ripristinata');
+    if(!confirm('Ripristinare i dati iniziali RC4.3? Le operazioni e note manuali verranno eliminate.')) return;
+    checkpointState('Prima del ripristino RC4'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC4.3 ripristinata');
   }
 
   function wantedIds(){
@@ -970,7 +1022,8 @@
       const universeMap=new Map(); [...capRows,...volRows].forEach(x=>{if(x?.id)universeMap.set(x.id,x);});
       const rows=[...universeMap.values()];
       const btc=universeMap.get('bitcoin')||market.bitcoin||{}; const prev=opp.prev||{};
-      const eligible=rows.filter(x=>x.id!=='bitcoin'&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000&&(num(x.market_cap)>=20_000_000||num(x.total_volume)>=8_000_000));
+      const ownedIds=new Set(portfolioSnapshot().positions.map(p=>p.id));
+      const eligible=rows.filter(x=>x.id!=='bitcoin'&&!ownedIds.has(x.id)&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000&&(num(x.market_cap)>=20_000_000||num(x.total_volume)>=8_000_000));
       const screened=eligible.map(x=>screenOpportunity(x,btc,prev[x.id],trendingIds)).sort((a,b)=>b._screenScore-a._screenScore||num(b.total_volume)-num(a.total_volume)).slice(0,40);
 
       const detailIds=new Set(screened.map(x=>x.id));
@@ -983,12 +1036,12 @@
       }
       const detailMap=new Map(detailRows.map(x=>[x.id,x]));
       const candidatePool=[...new Map([...screened.map(x=>[x.id,detailMap.get(x.id)||x]),...detailRows.map(x=>[x.id,x])]).values()];
-      const assessed=candidatePool.filter(x=>x.id!=='bitcoin'&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000).map(x=>analyzeOpportunity(x,btc,prev[x.id],trendingIds)).filter(Boolean);
+      const assessed=candidatePool.filter(x=>x.id!=='bitcoin'&&!ownedIds.has(x.id)&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000).map(x=>analyzeOpportunity(x,btc,prev[x.id],trendingIds)).filter(Boolean);
       assessed.sort((a,b)=>{const rank={'POSSIBILE INGRESSO':4,PREPARATI:3,INTERESSANTE:3,OSSERVA:2,'NON INSEGUIRE':1};return ((rank[b.status]||0)-(rank[a.status]||0))||(b.score-a.score)||(num(b.total_volume)-num(a.total_volume));});
-      const candidates=assessed.slice(0,5);
+      const candidates=assessed.slice(0,3);
       const now=Date.now(),nextPrev={}; rows.forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)}); detailRows.forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)});
       updateSignalOutcomes(detailRows.length?detailRows:rows); state.opportunity={...opp,time:now,candidates,prev:nextPrev,trending:[...trendingIds],signals:state.opportunity.signals||[]}; recordOpportunitySignals(candidates);
-      candidates.forEach(c=>market[c.id]={...market[c.id],...c}); saveState(); renderAll(); toast(candidates.length?`Radar: ${candidates.length} candidati da osservare`:'Radar: nessun segnale pulito al momento');
+      candidates.forEach(c=>market[c.id]={...market[c.id],...c}); saveState(); renderAll(); toast(candidates.length?`Radar: ${candidates.length} opportunità selezionate`:'Radar: nessun segnale pulito al momento');
     }catch(_){ toast('Radar Opportunità: scansione non disponibile, riproverà automaticamente'); }
     finally{ opportunityScanInFlight=false; const b=$('[data-action="scan-opportunities"]');if(b){b.disabled=false;b.textContent='◎ Scansiona';} }
   }

@@ -1,4 +1,4 @@
-CRYPTO CONTE RC4 — AGGIORNAMENTO DA RC3
+CRYPTO CONTE RC4.1 — AGGIORNAMENTO DA RC3
 
 1. Prima dell’aggiornamento: Diario → Esporta backup.
 2. Sostituisci i file del repository con quelli di questa cartella.
@@ -6,4 +6,4 @@ CRYPTO CONTE RC4 — AGGIORNAMENTO DA RC3
 4. Se vedi ancora RC3, chiudi e riapri la PWA oppure usa il refresh una volta.
 
 I dati restano nello stesso localStorage (cryptoConte.v2.state).
-RC4 non azzera operazioni, watchlist o storico Radar.
+RC4.1 non azzera operazioni, watchlist o storico Radar.

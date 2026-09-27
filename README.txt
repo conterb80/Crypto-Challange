@@ -1,8 +1,8 @@
-CRYPTO CONTE RC4 — RADAR PULITO E DIDATTICO
+CRYPTO CONTE RC4.1 — RADAR PULITO E DIDATTICO
 
 Obiettivo: ridurre il rumore senza perdere informazioni.
 
-NOVITÀ RC4
+NOVITÀ RC4.1
 - Radar: niente duplicazione delle posizioni già presenti nella Sala.
 - La mia Watchlist: solo crypto scelte dall’utente.
 - Semaforo Watchlist: OSSERVA / PREPARATI / POSSIBILE INGRESSO / NON INSEGUIRE.

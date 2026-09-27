@@ -1,4 +1,4 @@
-TEST RAPIDO RC4
+TEST RAPIDO RC4.1
 
 1. In Sala: verifica che il portafoglio e i dati esistenti siano invariati.
 2. In Radar: controlla che non compaia più la lista delle posizioni possedute.

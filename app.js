@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.4.0';
+  const VERSION = '2.4.1';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 90 * 1000;
   const AUTO_REFRESH_MS = 150 * 1000;
@@ -88,7 +88,6 @@
   });
 
   let state = loadState();
-  state.opportunity.signals=normalizeOpportunitySignals(state.opportunity?.signals||[]);
   let market = {...BASELINE.seedMarket, ...(state.marketCache?.data || {})};
   let currentSheetAsset = null;
   let currentRange = '7d';
@@ -103,6 +102,10 @@
   const uid = () => `op-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
   const num = v => Number.isFinite(Number(v)) ? Number(v) : 0;
   const round = (v,d=8) => Number(Number(v).toFixed(d));
+
+  // RC4.1 hotfix: normalize saved Radar signals only after numeric helpers exist.
+  state.opportunity = {...defaultState().opportunity, ...(state.opportunity||{})};
+  state.opportunity.signals = normalizeOpportunitySignals(state.opportunity.signals||[]);
 
   function loadState(){
     try{

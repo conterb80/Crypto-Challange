@@ -1,0 +1,10 @@
+TEST RAPIDO RC4
+
+1. In Sala: verifica che il portafoglio e i dati esistenti siano invariati.
+2. In Radar: controlla che non compaia più la lista delle posizioni possedute.
+3. Watchlist: devono comparire solo le crypto scelte manualmente (es. LTC) con semaforo e spiegazione semplice.
+4. Radar Opportunità: deve continuare a mostrare pochi candidati automatici.
+5. Cosa sarebbe successo?: le card devono essere compatte; toccandole si aprono spiegazione semplice, dati tecnici e 24h/48h.
+6. Verifica che per una stessa crypto non vengano create più card attive duplicate.
+7. Dopo 48h un segnale concluso deve comparire nell’Archivio segnali.
+8. Prova Scansiona e il refresh generale.

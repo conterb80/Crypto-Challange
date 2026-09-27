@@ -9,14 +9,14 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=2.3.0">
+  <link rel="stylesheet" href="style.css?v=2.4.0">
   <title>Crypto Conte</title>
 </head>
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">SALA CONTROLLO · RC3</div>
+        <div class="eyebrow">SALA CONTROLLO · RC4</div>
         <h1>Crypto Conte</h1>
         <div id="dataStatus" class="data-status"><span class="dot"></span><span>caricamento dati…</span></div>
       </div>
@@ -118,7 +118,7 @@
       <div id="watchSearchStatus" class="form-hint">Cerca per sigla o nome. Non serve conoscere il CoinGecko ID.</div>
     </div>
     <div id="watchChoices" class="choice-list"></div>
-    <p class="muted small">La watchlist è libera: le posizioni aperte sono già incluse automaticamente nel Radar e non serve aggiungerle di nuovo.</p>
+    <p class="muted small">La watchlist è libera: qui compaiono solo le crypto che scegli di seguire. Le posizioni aperte restano nella Sala e non vengono duplicate nel Radar.</p>
   </section>
 
   <section id="noteSheet" class="sheet" aria-modal="true" role="dialog" hidden>
@@ -145,6 +145,6 @@
 
   <input id="restoreInput" type="file" accept="application/json" hidden>
 
-  <script src="app.js?v=2.3.0"></script>
+  <script src="app.js?v=2.4.0"></script>
 </body>
 </html>

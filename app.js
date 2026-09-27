@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.3.0';
+  const VERSION = '2.4.0';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 90 * 1000;
   const AUTO_REFRESH_MS = 150 * 1000;
@@ -88,6 +88,7 @@
   });
 
   let state = loadState();
+  state.opportunity.signals=normalizeOpportunitySignals(state.opportunity?.signals||[]);
   let market = {...BASELINE.seedMarket, ...(state.marketCache?.data || {})};
   let currentSheetAsset = null;
   let currentRange = '7d';
@@ -253,6 +254,63 @@
 
 
   function candidateTone(status){ return status==='INTERESSANTE'?'good':status==='NON INSEGUIRE'?'warn':''; }
+  function watchDecision(m){
+    const btc=market.bitcoin||{};
+    const h=num(m?.price_change_percentage_1h_in_currency), d=num(m?.price_change_percentage_24h_in_currency), w=num(m?.price_change_percentage_7d_in_currency);
+    const bd=num(btc?.price_change_percentage_24h_in_currency), rel=d-bd;
+    const tooFast=h>=4.5||d>=12||(w>=25&&d>=4);
+    if(tooFast) return {label:'NON INSEGUIRE',tone:'stop',reason:'movimento già molto esteso: meglio osservare senza rincorrere il prezzo'};
+    if(h>=0.20&&h<=3.5&&d>=1.5&&d<=8&&rel>=1) return {label:'POSSIBILE INGRESSO',tone:'ready',reason:'momentum positivo e forza relativa a BTC: merita un approfondimento prima di qualsiasi decisione'};
+    if(d>=0.5&&rel>=0.25) return {label:'PREPARATI',tone:'prepare',reason:'sta migliorando rispetto al mercato, ma manca ancora una conferma più netta'};
+    if(d<=-6&&h<0) return {label:'OSSERVA',tone:'observe',reason:'fase debole: seguila senza anticipare un recupero'};
+    return {label:'OSSERVA',tone:'observe',reason:'nessun segnale abbastanza pulito: resta in osservazione'};
+  }
+  function humanSignalExplanation(sig){
+    const r=String(sig.reasonLatest||sig.reason||'').toLowerCase();
+    const parts=[];
+    if(r.includes('volume')) parts.push('gli scambi erano insolitamente attivi');
+    if(r.includes('accelerazione')) parts.push('il movimento stava accelerando rispetto alla scansione precedente');
+    if(r.includes('momentum')) parts.push('il prezzo mostrava momentum positivo nelle 24 ore');
+    if(r.includes('forza vs btc')) parts.push('stava facendo meglio di Bitcoin');
+    if(r.includes('compressione')) parts.push('era vicina ai massimi dopo una fase relativamente compressa');
+    if(r.includes('breakout')) parts.push('stava tentando un breakout');
+    if(r.includes('coingecko')) parts.push('stava aumentando l’interesse di mercato');
+    if(!parts.length) parts.push('il Radar aveva rilevato una combinazione di segnali da monitorare');
+    return `Il segnale è stato salvato perché ${parts.slice(0,3).join(', ')}.`;
+  }
+  function signalState(sig){
+    const done=sig.outcome48;
+    const o=done||sig.outcome24;
+    if(done){
+      const p=num(done.pct);
+      if(p>=2) return {label:'SEGNALE POSITIVO',tone:'ready'};
+      if(p<=-2) return {label:'SEGNALE FALLITO',tone:'stop'};
+      return {label:'QUASI INVARIATO',tone:'observe'};
+    }
+    if(o){
+      const p=num(o.pct);
+      if(p>=2) return {label:'IN VERIFICA +',tone:'ready'};
+      if(p<=-2) return {label:'IN VERIFICA −',tone:'stop'};
+      return {label:'IN VERIFICA',tone:'prepare'};
+    }
+    return sig.status==='INTERESSANTE'?{label:'PREPARATI',tone:'prepare'}:{label:'OSSERVA',tone:'observe'};
+  }
+  function signalOutcomeSentence(o,label){
+    if(!o) return `${label}: in attesa`;
+    const p=num(o.pct);
+    if(p>=2) return `${label}: segnale positivo ${fmtPct(p)}`;
+    if(p<=-2) return `${label}: segnale negativo ${fmtPct(p)}`;
+    return `${label}: quasi invariato ${fmtPct(p)}`;
+  }
+  function normalizeOpportunitySignals(list){
+    const rows=[...(Array.isArray(list)?list:[])].sort((a,b)=>num(a.time)-num(b.time));
+    const activeById=new Map(), completed=[];
+    rows.forEach(sig=>{
+      if(sig?.outcome48) completed.push(sig);
+      else if(sig?.id&&!activeById.has(sig.id)) activeById.set(sig.id,sig);
+    });
+    return [...completed.slice(-40),...activeById.values()].sort((a,b)=>num(a.time)-num(b.time)).slice(-60);
+  }
   function pctChange(from,to){ return from>0&&Number.isFinite(to)?(to/from-1)*100:null; }
   function screenOpportunity(x,btc,prev,trendingIds){
     const h=num(x.price_change_percentage_1h_in_currency),d=num(x.price_change_percentage_24h_in_currency),w=num(x.price_change_percentage_7d_in_currency);
@@ -325,16 +383,21 @@
       if(hours>=24&&!sig.outcome24){ sig.outcome24={time:now,hours,price:num(x.current_price),pct:pctChange(sig.price,num(x.current_price))}; changed=true; }
       if(hours>=48&&!sig.outcome48){ sig.outcome48={time:now,hours,price:num(x.current_price),pct:pctChange(sig.price,num(x.current_price))}; changed=true; }
     });
-    if(changed) state.opportunity.signals=state.opportunity.signals.slice(-30);
+    if(changed){ state.opportunity.signals=normalizeOpportunitySignals(state.opportunity.signals); }
   }
   function recordOpportunitySignals(candidates){
-    const now=Date.now(); const signals=state.opportunity.signals||[];
+    const now=Date.now(); const signals=normalizeOpportunitySignals(state.opportunity.signals||[]);
     candidates.filter(c=>c.status==='INTERESSANTE'||c.status==='OSSERVA').forEach(c=>{
+      const active=[...signals].reverse().find(s=>s.id===c.id&&!s.outcome48);
+      if(active){
+        active.latestStatus=c.status; active.reasonLatest=c.reason; active.lastSeen=now;
+        return;
+      }
       const last=[...signals].reverse().find(s=>s.id===c.id);
-      if(last&&now-num(last.time)<24*3600000) return;
-      signals.push({signalId:`sig-${now}-${c.id}`,id:c.id,symbol:c.symbol,name:c.name,time:now,price:num(c.current_price),status:c.status,reason:c.reason,outcome24:null,outcome48:null});
+      if(last&&last.outcome48&&now-num(last.outcome48.time)<12*3600000&&last.status===c.status) return;
+      signals.push({signalId:`sig-${now}-${c.id}`,id:c.id,symbol:c.symbol,name:c.name,time:now,price:num(c.current_price),status:c.status,latestStatus:c.status,reason:c.reason,reasonLatest:c.reason,lastSeen:now,outcome24:null,outcome48:null});
     });
-    state.opportunity.signals=signals.slice(-30);
+    state.opportunity.signals=normalizeOpportunitySignals(signals);
   }
   function signalOutcomeLabel(o,label){
     if(!o) return `<span class="pending">${label}: in attesa</span>`;
@@ -404,19 +467,23 @@
   function renderRadar(){
     const s=portfolioSnapshot();
     const ownedSymbols=new Set(s.positions.map(p=>p.symbol));
-    const base=[assetBySymbol('BTC'),assetBySymbol('ETH'),...s.positions.map(p=>assetBySymbol(p.symbol)||p),...watchAssets()].filter(Boolean);
-    const map=new Map(); base.forEach(a=>map.set(a.id||a.symbol,a));
-    const items=[...map.values()];
+    const watch=watchAssets();
     const opp=state.opportunity||defaultState().opportunity;
     const scanTime=opp.time?fmtDate(opp.time):'mai';
-    const signals=[...(opp.signals||[])].sort((a,b)=>b.time-a.time).slice(0,8);
+    const allSignals=normalizeOpportunitySignals(opp.signals||[]).sort((a,b)=>num(b.time)-num(a.time));
+    const activeSignals=allSignals.filter(sig=>!sig.outcome48).slice(0,8);
+    const archivedSignals=allSignals.filter(sig=>!!sig.outcome48).slice(0,20);
+    const signalCard=sig=>{
+      const st=signalState(sig);
+      return `<details class="signal-card"><summary class="signal-summary"><div><div class="signal-name">${esc(sig.symbol)} · ${esc(sig.name||'')}</div><div class="signal-meta">${fmtDate(sig.time)} · prezzo ${fmtPrice(num(sig.price))}</div><div class="signal-compact">${esc(signalOutcomeSentence(sig.outcome24,'24h'))} · ${esc(signalOutcomeSentence(sig.outcome48,'48h'))}</div></div><span class="status-pill ${st.tone}">${esc(st.label)}</span></summary><div class="signal-detail"><div class="simple-explain"><b>In parole semplici:</b> ${esc(humanSignalExplanation(sig))}</div><div class="technical-box"><b>Dati tecnici</b><div>${esc(sig.reasonLatest||sig.reason||'Dati in aggiornamento')}</div></div><div class="signal-result">${sig.outcome24?esc(signalOutcomeSentence(sig.outcome24,'Dopo 24h')):'Dopo 24h: in attesa'}<br>${sig.outcome48?esc(signalOutcomeSentence(sig.outcome48,'Dopo 48h')):'Dopo 48h: in attesa'}</div><button class="mini-link" data-open-asset="${esc(sig.symbol)}">Apri dettagli crypto</button></div></details>`;
+    };
     $('#view-radar').innerHTML=`
       <div class="section-title"><div><h2>Radar Opportunità</h2><p>Scansione automatica del mercato ogni 15 minuti · ultimo scan ${scanTime}</p></div><div class="right"><button class="chip-btn" data-action="scan-opportunities">◎ Scansiona</button></div></div>
-      <div class="radar-explain"><b>Cosa cerca:</b> volume e sua accelerazione, momentum, forza rispetto a BTC, compressione/breakout e interesse di mercato. Scansiona un universo ampio per capitalizzazione, volume e Trending, poi mostra pochi candidati per capire <i>perché</i> meritano attenzione, non ordini di acquisto.</div>
+      <div class="radar-explain"><b>Cosa cerca:</b> volume e sua accelerazione, momentum, forza rispetto a BTC, compressione/breakout e interesse di mercato. Mostra pochi candidati per capire <i>perché</i> meritano attenzione: non sono ordini di acquisto.</div>
       <div class="opportunity-list">${(opp.candidates||[]).length?(opp.candidates||[]).map(c=>{
         const owned=ownedSymbols.has(c.symbol), watched=isWatched(c);
         return `<article class="opportunity-card" data-open-asset="${esc(c.symbol)}">
-          <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${owned?'GIÀ IN PORTAFOGLIO':watched?'GIÀ IN WATCHLIST':'SCANSIONE AUTOMATICA'}</div></div><span class="status-pill ${c.tone||candidateTone(c.status)}">${esc(c.status)}</span></div>
+          <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${owned?'SEGNALATA · GIÀ IN PORTAFOGLIO':watched?'SEGNALATA · GIÀ IN WATCHLIST':'SCANSIONE AUTOMATICA'}</div></div><span class="status-pill ${c.tone||candidateTone(c.status)}">${esc(c.status)}</span></div>
           <div class="radar-grid">
             <div class="metric"><span>Prezzo</span><b>${fmtPrice(num(c.current_price))}</b></div>
             <div class="metric"><span>1h</span><b class="${cls(num(c.price_change_percentage_1h_in_currency))}">${fmtPct(c.price_change_percentage_1h_in_currency)}</b></div>
@@ -427,16 +494,14 @@
           <div class="radar-reason"><b>Perché lo sto guardando:</b> ${esc(c.reason)}</div>
           ${!owned&&!watched?`<div class="opportunity-actions"><button data-watch-candidate="${esc(c.id)}">＋ Aggiungi alla watchlist</button></div>`:''}
         </article>`;
-      }).join(''):'<div class="empty">Il Radar Opportunità non ha ancora completato una scansione, oppure non trova segnali abbastanza puliti. La scansione parte automaticamente.</div>'}</div>
+      }).join(''):'<div class="empty">Nessun segnale abbastanza pulito nell’ultima scansione. Il Radar continuerà a controllare automaticamente.</div>'}</div>
 
-      <div class="section-title"><div><h2>Cosa sarebbe successo?</h2><p>Segnali salvati senza dover comprare: confronto alla prima rilevazione dopo 24h e 48h</p></div></div>
-      <div class="signal-list">${signals.length?signals.map(sig=>`<article class="signal-card" data-open-asset="${esc(sig.symbol)}"><div class="signal-top"><div><b>${esc(sig.symbol)} · ${esc(sig.status)}</b><small>${fmtDate(sig.time)} · prezzo segnale ${fmtPrice(num(sig.price))}</small></div></div><div class="signal-outcomes">${signalOutcomeLabel(sig.outcome24,'24h')} · ${signalOutcomeLabel(sig.outcome48,'48h')}</div><div class="radar-reason">${esc(sig.reason)}</div></article>`).join(''):'<div class="empty">Quando il Radar troverà un candidato OSSERVA o INTERESSANTE, salverà qui prezzo e ora per misurare il metodo senza rischiare denaro.</div>'}</div>
-
-      <div class="section-title"><div><h2>Il tuo Radar</h2><p>BTC/ETH, posizioni e watchlist libera</p></div><div class="right"><button class="chip-btn" data-action="add-watch">＋ Watchlist</button></div></div>
-      <div class="radar-list">${items.map(a=>{
-        const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; const st=radarStatus(m); const owned=ownedSymbols.has(a.symbol); const watched=isWatched(a);
+      <div class="section-title"><div><h2>La mia Watchlist</h2><p>Solo le crypto che hai deciso di seguire</p></div><div class="right"><button class="chip-btn" data-action="add-watch">＋ Watchlist</button></div></div>
+      <div class="watch-semaphore-legend"><span class="legend-dot observe"></span>OSSERVA <span class="legend-dot prepare"></span>PREPARATI <span class="legend-dot ready"></span>POSSIBILE INGRESSO <span class="legend-dot stop"></span>NON INSEGUIRE</div>
+      <div class="radar-list">${watch.length?watch.map(a=>{
+        const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; const st=watchDecision(m);
         return `<article class="radar-card" data-open-asset="${esc(a.symbol)}">
-          <div class="radar-top"><div><div class="radar-title">${esc(a.symbol)} · ${esc(a.name)}</div><div class="radar-sub">${owned?'POSIZIONE':a.symbol==='BTC'||a.symbol==='ETH'?'MERCATO GUIDA':'WATCHLIST'}</div></div><div><span class="status-pill ${st.tone}">${st.label}</span>${watched?`<button class="watch-remove" data-remove-watch-id="${esc(a.id)}">rimuovi</button>`:''}</div></div>
+          <div class="radar-top"><div><div class="radar-title">${esc(a.symbol)} · ${esc(a.name)}</div><div class="radar-sub">WATCHLIST</div></div><div><span class="status-pill ${st.tone}">${esc(st.label)}</span><button class="watch-remove" data-remove-watch-id="${esc(a.id)}">rimuovi</button></div></div>
           <div class="radar-grid">
             <div class="metric"><span>Prezzo</span><b>${fmtPrice(num(m.current_price))}</b></div>
             <div class="metric"><span>1h</span><b class="${cls(num(m.price_change_percentage_1h_in_currency))}">${fmtPct(m.price_change_percentage_1h_in_currency)}</b></div>
@@ -444,9 +509,13 @@
             <div class="metric"><span>7g</span><b class="${cls(num(m.price_change_percentage_7d_in_currency))}">${fmtPct(m.price_change_percentage_7d_in_currency)}</b></div>
           </div>
           <div class="spark">${sparkSVG(m?.sparkline_in_7d?.price)}</div>
-          <div class="radar-reason">${radarReason(m,owned)}</div>
+          <div class="watch-why"><b>${esc(st.label)}:</b> ${esc(st.reason)}</div>
         </article>`;
-      }).join('')}</div>
+      }).join(''):'<div class="empty">La watchlist è vuota. Aggiungi una crypto dal Radar Opportunità oppure con ＋ Watchlist.</div>'}</div>
+
+      <div class="section-title"><div><h2>Cosa sarebbe successo?</h2><p>Solo segnali ancora da verificare · tocca una card per aprire la spiegazione</p></div></div>
+      <div class="signal-list">${activeSignals.length?activeSignals.map(signalCard).join(''):'<div class="empty">Nessun segnale attivo. I nuovi candidati verranno salvati automaticamente per il confronto a 24h e 48h.</div>'}</div>
+      ${archivedSignals.length?`<details class="signal-archive"><summary>Archivio segnali conclusi <span>${archivedSignals.length}</span></summary><div class="signal-list archive-list">${archivedSignals.map(signalCard).join('')}</div></details>`:''}
     `;
   }
 
@@ -490,10 +559,10 @@
     ['Volume','Il volume indica quanto valore è stato scambiato. Un movimento di prezzo accompagnato da volume elevato è diverso da un movimento con scambi ridotti.'],
     ['Liquidità','Quando vendi una crypto, il denaro torna liquidità nel conto Base o Test. Solo quando registri un nuovo acquisto quella liquidità viene nuovamente investita.'],
     ['Commissioni','Anche pochi centesimi cambiano il risultato reale. Inserirle quando sono note evita di sovrastimare il profitto.'],
-    ['Radar, non ordini','Gli stati del Radar descrivono forza e direzione dei movimenti. Non sono ordini automatici di acquisto o vendita: servono per capire dove guardare.'],
+    ['Radar, non ordini','Gli stati del Radar e il semaforo della watchlist sono filtri didattici: servono per capire dove guardare e cosa approfondire, non sono ordini automatici.'],
     ['Forza relativa vs BTC','Confronta il movimento di una crypto con Bitcoin. Se fa +5% mentre BTC fa +1%, la forza relativa sulle 24h è circa +4 punti percentuali.'],
     ['NON INSEGUIRE','Segnala un movimento già molto esteso. Non significa che la crypto debba scendere: ricorda semplicemente di non confondere una forte corsa già avvenuta con un segnale iniziale.'],
-    ['Cosa sarebbe successo?','Salvare un segnale senza comprare permette di confrontare il prezzo dopo 24h e 48h e capire se il metodo sta davvero individuando movimenti interessanti.']
+    ['Cosa sarebbe successo?','La card resta compatta e si apre al tocco: mostra in parole semplici perché il segnale è nato, i dati tecnici e il confronto dopo 24h e 48h.']
   ];
   function renderSchool(){
     $('#view-school').innerHTML=`
@@ -513,7 +582,7 @@
       <div class="section-title"><div><h2>Risultati realizzati</h2><p>Dalle operazioni registrate dopo questo aggiornamento</p></div></div>
       <div class="closed-list">${realizedEntries.length?realizedEntries.map(([sym,v])=>`<article class="closed-card"><div class="closed-top"><div><div class="closed-title">${esc(sym)}</div><div class="closed-sub">P/L realizzato</div></div><div class="${cls(v)}" style="font-size:18px;font-weight:900">${fmtEUR(v)}</div></div></article>`).join(''):'<div class="empty">Nessun profitto o perdita realizzato registrato dalla RC1.</div>'}</div>
 
-      <div class="settings-card"><h3>Backup e sicurezza dati</h3><p class="muted small">I dati manuali restano sul dispositivo. RC3 mantiene anche un punto sicurezza locale prima delle modifiche importanti.</p><div class="settings-actions"><button class="chip-btn" data-action="export">Esporta backup</button><button class="chip-btn" data-action="restore">Importa backup</button><button class="chip-btn" data-action="restore-safety">Ripristina ultimo punto</button><button class="danger-btn" data-action="reset">Ripristina RC3</button></div></div>
+      <div class="settings-card"><h3>Backup e sicurezza dati</h3><p class="muted small">I dati manuali restano sul dispositivo. RC4 mantiene anche un punto sicurezza locale prima delle modifiche importanti.</p><div class="settings-actions"><button class="chip-btn" data-action="export">Esporta backup</button><button class="chip-btn" data-action="restore">Importa backup</button><button class="chip-btn" data-action="restore-safety">Ripristina ultimo punto</button><button class="danger-btn" data-action="reset">Ripristina RC4</button></div></div>
       <div class="settings-card"><h3>Contabilità</h3><div class="cash-details"><div class="cash-mini"><span>Capitale personale</span><b>${fmtEUR(s.ownDeposits)}</b></div><div class="cash-mini"><span>Reward accumulati</span><b>${fmtEUR(s.rewardDeposits)}</b></div><div class="cash-mini"><span>Prelievi registrati</span><b>${fmtEUR(s.withdrawals)}</b></div><div class="cash-mini"><span>Risultato reale</span><b class="${cls(s.result)}">${fmtEUR(s.result)}</b></div></div></div>
     `;
   }
@@ -753,8 +822,8 @@
     try{ const data=JSON.parse(await file.text()); if(!data?.state?.ops||!Array.isArray(data.state.ops)) throw new Error('Formato non valido'); checkpointState('Prima di importare backup'); state={...defaultState(),...data.state,opportunity:{...defaultState().opportunity,...(data.state.opportunity||{})}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll();refreshMarket(true);toast('Backup importato'); }catch(_){toast('Backup non valido');}
   }
   function resetState(){
-    if(!confirm('Ripristinare i dati iniziali RC3? Le operazioni e note manuali verranno eliminate.')) return;
-    checkpointState('Prima del ripristino RC3'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC3 ripristinata');
+    if(!confirm('Ripristinare i dati iniziali RC4? Le operazioni e note manuali verranno eliminate.')) return;
+    checkpointState('Prima del ripristino RC4'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC4 ripristinata');
   }
 
   function wantedIds(){

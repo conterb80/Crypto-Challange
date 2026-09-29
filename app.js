@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.4.3.3';
+  const VERSION = '2.4.3.4';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 4 * 60 * 1000;
   const AUTO_REFRESH_MS = 5 * 60 * 1000;
@@ -91,6 +91,16 @@
   });
 
   let state = loadState();
+
+  // RC4.3.4 migration: elimina l'eventuale prezzo PEPE errato salvato dalla
+  // RC4.3.3, causato da un omonimo CoinPaprika con lo stesso simbolo.
+  const cachedPepe=state.marketCache?.data?.pepe;
+  if(cachedPepe?._source==='CoinPaprika' && cachedPepe?.paprika_id && cachedPepe.paprika_id!=='pepe-pepe'){
+    state.marketCache.data.pepe={...BASELINE.seedMarket.pepe};
+    state.marketCache.time=0;
+    try{ localStorage.setItem(STORAGE_KEY,JSON.stringify({...state,version:VERSION})); }catch(_){ }
+  }
+
   let market = {...BASELINE.seedMarket, ...(state.marketCache?.data || {})};
   let currentSheetAsset = null;
   let currentRange = '7d';
@@ -152,13 +162,26 @@
 
   function assetForPaprikaTicker(t){
     const symbol=String(t?.symbol||'').toUpperCase();
-    const name=String(t?.name||'').toLowerCase();
+    const name=String(t?.name||'').trim().toLowerCase();
     const pool=[...allAssets(),...(state.opportunity?.candidates||[])];
-    const exact=pool.find(a=>String(a.symbol||'').toUpperCase()===symbol && String(a.name||'').toLowerCase()===name);
-    if(exact) return exact;
-    const known=pool.filter(a=>String(a.symbol||'').toUpperCase()===symbol);
-    if(known.length===1) return known[0];
-    return null;
+
+    // RC4.3.4: non associare mai un ticker CoinPaprika solo per simbolo.
+    // Simboli come PEPE possono appartenere a più token diversi: un match
+    // per simbolo finirebbe per sovrascrivere il prezzo della posizione reale.
+    const explicitPaprikaToCg={
+      'pepe-pepe':'pepe'
+    };
+    const explicitId=explicitPaprikaToCg[String(t?.id||'')];
+    if(explicitId){
+      const explicit=pool.find(a=>a.id===explicitId);
+      if(explicit) return explicit;
+    }
+
+    const exact=pool.find(a=>
+      String(a.symbol||'').toUpperCase()===symbol &&
+      String(a.name||'').trim().toLowerCase()===name
+    );
+    return exact||null;
   }
 
   function paprikaToMarket(t){
@@ -1113,7 +1136,7 @@
     opportunityScanInFlight=true;
     const btn=$('[data-action="scan-opportunities"]'); if(btn){btn.disabled=true;btn.textContent='scansione…';}
     try{
-      // RC4.3.3: il Radar usa CoinPaprika come fonte keyless principale.
+      // RC4.3.4: Radar CoinPaprika con mapping asset sicuro contro ticker omonimi.
       // Una sola lista mercato alimenta prezzi, volume, momentum e forza vs BTC.
       const rows=await getPaprikaUniverse(force);
       const btc=rows.find(x=>String(x.symbol).toLowerCase()==='btc')||market.bitcoin||{};

@@ -1,12 +1,12 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.4.3.2';
+  const VERSION = '2.4.3.3';
   const STORAGE_KEY = 'cryptoConte.v2.state';
-  const MARKET_TTL = 90 * 1000;
-  const AUTO_REFRESH_MS = 150 * 1000;
+  const MARKET_TTL = 4 * 60 * 1000;
+  const AUTO_REFRESH_MS = 5 * 60 * 1000;
   const OPPORTUNITY_TTL = 15 * 60 * 1000;
-  const MARKET_STALE_MS = 10 * 60 * 1000;
+  const MARKET_STALE_MS = 15 * 60 * 1000;
   const API_TIMEOUT_MS = 12000;
   const TRENDING_TTL = 60 * 60 * 1000;
   const SAFETY_KEY = 'cryptoConte.v2.safety';
@@ -100,6 +100,8 @@
   let opportunityScanInFlight = false;
   let apiBackoffUntil = 0;
   let lastApiError = '';
+  let paprikaCache = {time:0, rows:[]};
+  let marketSource = 'cache';
   const sleep = ms => new Promise(r=>setTimeout(r,ms));
   const isMarketStale = () => !state.marketCache?.time || Date.now()-num(state.marketCache.time)>MARKET_STALE_MS;
   const backoffMinutes = () => Math.max(1,Math.ceil((apiBackoffUntil-Date.now())/60000));
@@ -135,6 +137,63 @@
     }
     if(optional) return null;
     throw lastErr||new Error('API non disponibile');
+  }
+
+
+  async function paprikaFetch(url){
+    const ctl=new AbortController();
+    const timer=setTimeout(()=>ctl.abort(),15000);
+    try{
+      const res=await fetch(url,{headers:{accept:'application/json'},cache:'no-store',signal:ctl.signal});
+      if(!res.ok){ const e=new Error('HTTP '+res.status); e.code=res.status; throw e; }
+      return res;
+    }finally{ clearTimeout(timer); }
+  }
+
+  function assetForPaprikaTicker(t){
+    const symbol=String(t?.symbol||'').toUpperCase();
+    const name=String(t?.name||'').toLowerCase();
+    const pool=[...allAssets(),...(state.opportunity?.candidates||[])];
+    const exact=pool.find(a=>String(a.symbol||'').toUpperCase()===symbol && String(a.name||'').toLowerCase()===name);
+    if(exact) return exact;
+    const known=pool.filter(a=>String(a.symbol||'').toUpperCase()===symbol);
+    if(known.length===1) return known[0];
+    return null;
+  }
+
+  function paprikaToMarket(t){
+    const q=t?.quotes?.EUR||{};
+    const known=assetForPaprikaTicker(t);
+    const id=known?.id||`paprika:${t.id}`;
+    const old=market?.[id]||state.marketCache?.data?.[id]||{};
+    return {
+      ...old,
+      id,
+      paprika_id:t.id,
+      symbol:String(t.symbol||'').toLowerCase(),
+      name:t.name||known?.name||String(t.symbol||'').toUpperCase(),
+      current_price:num(q.price),
+      market_cap:num(q.market_cap),
+      market_cap_rank:num(t.rank)||null,
+      total_volume:num(q.volume_24h),
+      price_change_percentage_1h_in_currency:Number.isFinite(Number(q.percent_change_1h))?Number(q.percent_change_1h):null,
+      price_change_percentage_24h_in_currency:Number.isFinite(Number(q.percent_change_24h))?Number(q.percent_change_24h):null,
+      price_change_percentage_7d_in_currency:Number.isFinite(Number(q.percent_change_7d))?Number(q.percent_change_7d):null,
+      price_change_percentage_30d_in_currency:Number.isFinite(Number(q.percent_change_30d))?Number(q.percent_change_30d):null,
+      sparkline_in_7d:old.sparkline_in_7d||{price:[]},
+      last_updated:t.last_updated||null,
+      _source:'CoinPaprika'
+    };
+  }
+
+  async function getPaprikaUniverse(force=false){
+    if(!force && paprikaCache.rows.length && Date.now()-paprikaCache.time<4*60*1000) return paprikaCache.rows;
+    const res=await paprikaFetch('https://api.coinpaprika.com/v1/tickers?quotes=EUR');
+    const raw=await res.json();
+    if(!Array.isArray(raw)||!raw.length) throw new Error('CoinPaprika: risposta vuota');
+    const rows=raw.map(paprikaToMarket).filter(x=>x.id&&num(x.current_price)>0);
+    paprikaCache={time:Date.now(),rows};
+    return rows;
   }
 
   const $ = s => document.querySelector(s);
@@ -1003,14 +1062,16 @@
     $$('[data-pick-watch-id]').forEach(b=>b.addEventListener('click',()=>{const a=unique.find(x=>x.id===b.dataset.pickWatchId);if(a)addWatchAsset({...a,symbol:String(a.symbol).toUpperCase()});}));
   }
   async function searchWatch(q){
-    const local=allAssets().filter(a=>`${a.symbol} ${a.name} ${a.id}`.toLowerCase().includes(q.toLowerCase()));
+    const term=q.trim().toLowerCase();
+    const local=allAssets().filter(a=>`${a.symbol} ${a.name} ${a.id}`.toLowerCase().includes(term));
     renderWatchChoices(local);
-    if(q.trim().length<2){ $('#watchSearchStatus').textContent='Scrivi almeno 2 caratteri oppure scegli un suggerimento.'; return; }
-    $('#watchSearchStatus').textContent='Cerco su CoinGecko…';
+    if(term.length<2){ $('#watchSearchStatus').textContent='Scrivi almeno 2 caratteri oppure scegli un suggerimento.'; return; }
+    $('#watchSearchStatus').textContent='Cerco sul mercato…';
     try{
-      const res=await fetch(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(q.trim())}`,{headers:{accept:'application/json'},cache:'no-store'}); if(!res.ok) throw new Error('HTTP '+res.status);
-      const data=await res.json(); const remote=(data.coins||[]).slice(0,14).map(x=>({id:x.id,symbol:String(x.symbol||'').toUpperCase(),name:x.name,market_cap_rank:x.market_cap_rank}));
-      const byId=new Map([...local,...remote].map(a=>[a.id,a])); renderWatchChoices([...byId.values()]); $('#watchSearchStatus').textContent=`${byId.size} risultati · scegli la crypto corretta per nome.`;
+      const rows=await getPaprikaUniverse(false);
+      const remote=rows.filter(x=>`${x.symbol} ${x.name}`.toLowerCase().includes(term)).sort((a,b)=>num(a.market_cap_rank||999999)-num(b.market_cap_rank||999999)).slice(0,14);
+      const byId=new Map([...local,...remote].map(a=>[a.id,a]));
+      renderWatchChoices([...byId.values()]); $('#watchSearchStatus').textContent=`${byId.size} risultati · scegli la crypto corretta per nome.`;
     }catch(_){ $('#watchSearchStatus').textContent='Ricerca online momentaneamente non disponibile: mostro i risultati locali.'; }
   }
   function openWatchSheet(){
@@ -1049,81 +1110,99 @@
     if(opportunityScanInFlight) return false;
     const opp=state.opportunity||defaultState().opportunity;
     if(!force&&Date.now()-num(opp.time)<OPPORTUNITY_TTL){ (opp.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c}); return true; }
-    if(Date.now()<apiBackoffUntil){ toast(`Radar in pausa API · riprovo tra circa ${backoffMinutes()} min`); setDataStatus('backoff'); renderAll(); return false; }
     opportunityScanInFlight=true;
     const btn=$('[data-action="scan-opportunities"]'); if(btn){btn.disabled=true;btn.textContent='scansione…';}
     try{
-      // RC4.3.2: meno richieste e mai a raffica. Usiamo le 250 crypto più scambiate,
-      // poi approfondiamo solo i candidati migliori.
-      const common='vs_currency=eur&per_page=250&page=1&sparkline=false&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full';
-      const volumeUrl=`https://api.coingecko.com/api/v3/coins/markets?${common}&order=volume_desc`;
-      const trendUrl='https://api.coingecko.com/api/v3/search/trending';
-      const volRes=await cgFetch(volumeUrl);
-      const rows=await volRes.json();
-
-      let trendingIds=new Set(opp.trending||[]);
-      let trendingAt=num(opp.trendingAt);
-      if(!trendingAt||Date.now()-trendingAt>TRENDING_TTL){
-        await sleep(700);
-        const tr=await cgFetch(trendUrl,{optional:true});
-        if(tr){ const td=await tr.json(); trendingIds=new Set((td.coins||[]).map(x=>x.item?.id).filter(Boolean)); trendingAt=Date.now(); }
-      }
-
-      const universeMap=new Map(); rows.forEach(x=>{if(x?.id)universeMap.set(x.id,x);});
-      const btc=universeMap.get('bitcoin')||market.bitcoin||{}; const prev=opp.prev||{};
-      const ownedIds=new Set(portfolioSnapshot().positions.map(p=>p.id));
-      const eligible=rows.filter(x=>x.id!=='bitcoin'&&!ownedIds.has(x.id)&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000&&(num(x.market_cap)>=20_000_000||num(x.total_volume)>=8_000_000));
-      const screened=eligible.map(x=>screenOpportunity(x,btc,prev[x.id],trendingIds)).sort((a,b)=>b._screenScore-a._screenScore||num(b.total_volume)-num(a.total_volume)).slice(0,36);
-
-      const detailIds=new Set(screened.map(x=>x.id));
-      const detailUrl=`https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&ids=${encodeURIComponent([...detailIds].join(','))}&order=market_cap_desc&sparkline=true&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full`;
-      let detailRows=[];
-      if(detailIds.size){
-        await sleep(900);
-        const dr=await cgFetch(detailUrl,{optional:true});
-        if(dr) detailRows=await dr.json();
-      }
-      const detailMap=new Map(detailRows.map(x=>[x.id,x]));
-      const candidatePool=[...new Map([...screened.map(x=>[x.id,detailMap.get(x.id)||x]),...detailRows.map(x=>[x.id,x])]).values()];
-      const assessed=candidatePool.filter(x=>x.id!=='bitcoin'&&!ownedIds.has(x.id)&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000).map(x=>analyzeOpportunity(x,btc,prev[x.id],trendingIds)).filter(Boolean);
+      // RC4.3.3: il Radar usa CoinPaprika come fonte keyless principale.
+      // Una sola lista mercato alimenta prezzi, volume, momentum e forza vs BTC.
+      const rows=await getPaprikaUniverse(force);
+      const btc=rows.find(x=>String(x.symbol).toLowerCase()==='btc')||market.bitcoin||{};
+      const prev=opp.prev||{};
+      const snap=portfolioSnapshot();
+      const ownedSymbols=new Set(snap.positions.map(p=>String(p.symbol).toUpperCase()));
+      const eligible=rows.filter(x=>String(x.symbol).toUpperCase()!=='BTC'&&!ownedSymbols.has(String(x.symbol).toUpperCase())&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000&&(num(x.market_cap)>=20_000_000||num(x.total_volume)>=8_000_000));
+      const noTrending=new Set();
+      const screened=eligible.map(x=>screenOpportunity(x,btc,prev[x.id],noTrending)).sort((a,b)=>b._screenScore-a._screenScore||num(b.total_volume)-num(a.total_volume)).slice(0,42);
+      const assessed=screened.map(x=>analyzeOpportunity(x,btc,prev[x.id],noTrending)).filter(Boolean);
       assessed.sort((a,b)=>{const rank={'POSSIBILE INGRESSO':4,PREPARATI:3,INTERESSANTE:3,OSSERVA:2,'NON INSEGUIRE':1};return ((rank[b.status]||0)-(rank[a.status]||0))||(b.score-a.score)||(num(b.total_volume)-num(a.total_volume));});
       const candidates=assessed.slice(0,3);
-      const now=Date.now(),nextPrev={}; rows.forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)}); detailRows.forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)});
-      updateSignalOutcomes(detailRows.length?detailRows:rows); state.opportunity={...opp,time:now,candidates,prev:nextPrev,trending:[...trendingIds],trendingAt,signals:state.opportunity.signals||[]}; recordOpportunitySignals(candidates);
-      candidates.forEach(c=>market[c.id]={...market[c.id],...c}); saveState(); renderAll(); toast(candidates.length?`Radar: ${candidates.length} opportunità selezionate`:'Radar: nessun segnale pulito al momento');
+      const now=Date.now(),nextPrev={};
+      rows.slice(0,2000).forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)});
+      updateSignalOutcomes(rows);
+      state.opportunity={...opp,time:now,candidates,prev:nextPrev,trending:[],trendingAt:now,signals:state.opportunity.signals||[]};
+      recordOpportunitySignals(candidates);
+      candidates.forEach(c=>market[c.id]={...market[c.id],...c});
+      saveState(); renderAll();
+      toast(candidates.length?`Radar aggiornato: ${candidates.length} opportunità`:'Radar: nessun segnale pulito al momento');
       return true;
     }catch(err){
-      if(err?.code===429||err?.code==='BACKOFF') toast(`CoinGecko ha limitato le richieste · riprovo tra circa ${backoffMinutes()} min`);
-      else toast('Radar temporaneamente non disponibile: mantengo gli ultimi dati e riprovo');
-      if(isMarketStale()) setDataStatus(Date.now()<apiBackoffUntil?'backoff':'error');
+      toast('Radar non disponibile: mantengo gli ultimi dati e riprovo');
+      if(isMarketStale()) setDataStatus('error');
       renderAll(); return false;
+    } finally {
+      opportunityScanInFlight=false;
+      const b=$('[data-action="scan-opportunities"]'); if(b){b.disabled=false;b.textContent='◎ Scansiona';}
     }
-    finally{ opportunityScanInFlight=false; const b=$('[data-action="scan-opportunities"]');if(b){b.disabled=false;b.textContent='◎ Scansiona';} }
   }
+
   async function refreshMarket(force=false){
     if(marketRefreshInFlight) return false;
     const status=$('#dataStatus');
-    if(!force && Date.now()-num(state.marketCache?.time)<MARKET_TTL){ market={...BASELINE.seedMarket,...(state.marketCache.data||{})}; (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c}); setDataStatus('cache'); renderAll(); return true; }
-    if(Date.now()<apiBackoffUntil){ market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; setDataStatus('backoff'); renderAll(); return false; }
-    marketRefreshInFlight=true; status.className='data-status'; status.innerHTML='<span class="dot"></span><span>aggiorno prezzi e trend…</span>';
-    try{
-      const ids=wantedIds();
-      const url=`https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&ids=${encodeURIComponent(ids.join(','))}&order=market_cap_desc&sparkline=true&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full`;
-      const res=await cgFetch(url); const arr=await res.json(); const data={...market}; arr.forEach(x=>data[x.id]=x); market=data; updateSignalOutcomes(arr); state.marketCache={time:Date.now(),data}; saveState(); setDataStatus('live'); renderAll(); return true;
-    }catch(err){
-      market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c});
-      setDataStatus(Date.now()<apiBackoffUntil?'backoff':'error'); renderAll(); return false;
+    if(!force && Date.now()-num(state.marketCache?.time)<MARKET_TTL){
+      market={...BASELINE.seedMarket,...(state.marketCache.data||{})};
+      (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c});
+      setDataStatus('cache'); renderAll(); return true;
     }
-    finally{ marketRefreshInFlight=false; }
+    marketRefreshInFlight=true;
+    status.className='data-status'; status.innerHTML='<span class="dot"></span><span>aggiorno prezzi e trend…</span>';
+    try{
+      // Prima prova CoinPaprika: keyless e adatta a una PWA statica.
+      const rows=await getPaprikaUniverse(force);
+      const wanted=new Set(wantedIds());
+      const wantedSymbols=new Set();
+      portfolioSnapshot().positions.forEach(p=>wantedSymbols.add(String(p.symbol).toUpperCase()));
+      watchAssets().forEach(a=>wantedSymbols.add(String(a.symbol).toUpperCase()));
+      (state.opportunity?.candidates||[]).forEach(a=>wantedSymbols.add(String(a.symbol).toUpperCase()));
+      wantedSymbols.add('BTC'); wantedSymbols.add('ETH');
+      const data={...market};
+      let matched=0;
+      rows.forEach(x=>{
+        if(wanted.has(x.id)||wantedSymbols.has(String(x.symbol).toUpperCase())){
+          const a=assetForPaprikaTicker(x);
+          const targetId=a?.id||x.id;
+          data[targetId]={...data[targetId],...x,id:targetId};
+          matched++;
+        }
+      });
+      if(!matched) throw new Error('Nessun asset aggiornato');
+      market=data;
+      updateSignalOutcomes(rows);
+      state.marketCache={time:Date.now(),data};
+      marketSource='CoinPaprika';
+      saveState(); setDataStatus('live'); renderAll(); return true;
+    }catch(paprikaErr){
+      // Seconda fonte: CoinGecko. Se il browser la blocca, l'app resta comunque sulla cache.
+      try{
+        const ids=wantedIds().filter(id=>!String(id).startsWith('paprika:'));
+        const url=`https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&ids=${encodeURIComponent(ids.join(','))}&order=market_cap_desc&sparkline=true&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full`;
+        const res=await cgFetch(url); const arr=await res.json();
+        const data={...market}; arr.forEach(x=>data[x.id]=x);
+        market=data; updateSignalOutcomes(arr); state.marketCache={time:Date.now(),data}; marketSource='CoinGecko'; saveState(); setDataStatus('live'); renderAll(); return true;
+      }catch(_){
+        market={...BASELINE.seedMarket,...(state.marketCache?.data||{})};
+        (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c});
+        marketSource='cache'; setDataStatus('error'); renderAll(); return false;
+      }
+    } finally { marketRefreshInFlight=false; }
   }
 
   function setDataStatus(mode){
     const el=$('#dataStatus'); if(!el)return;
     const t=state.marketCache?.time?new Intl.DateTimeFormat('it-IT',{hour:'2-digit',minute:'2-digit'}).format(new Date(state.marketCache.time)):'baseline';
-    if(mode==='live') el.className='data-status live',el.innerHTML=`<span class="dot"></span><span>live · auto 2m30s · aggiornato ${t}</span>`;
+    if(mode==='live') el.className='data-status live',el.innerHTML=`<span class="dot"></span><span>live · ${marketSource} · auto 5m · aggiornato ${t}</span>`;
     else if(mode==='backoff') el.className='data-status error',el.innerHTML=`<span class="dot"></span><span>API in pausa · cache ${t} · riprovo ~${backoffMinutes()} min</span>`;
     else if(mode==='error') el.className='data-status error',el.innerHTML=`<span class="dot"></span><span>dati non aggiornati · ultimo live ${t}</span>`;
-    else el.className='data-status',el.innerHTML=`<span class="dot"></span><span>cache · auto 2m30s · ${t}</span>`;
+    else el.className='data-status',el.innerHTML=`<span class="dot"></span><span>cache · auto 5m · ${t}</span>`;
   }
 
   function toast(msg){

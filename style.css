@@ -49,3 +49,6 @@ button,input,select,textarea{font:inherit}.app-shell{max-width:760px;margin:0 au
 #toAccountLabel select:disabled{opacity:1;color:#dfe9f8;background:#0b1728;border-color:#315078;cursor:default}
 #toAccountLabel{position:relative}
 #toAccountLabel::after{content:'automatico';position:absolute;right:12px;top:1px;font-size:9px;text-transform:uppercase;letter-spacing:.06em;color:var(--cyan);font-weight:900}
+
+/* RC4.3.2 - stato dati stale */
+.radar-stale-warning{margin:10px 0 14px;padding:13px 15px;border:1px solid rgba(251,191,36,.35);border-radius:18px;background:rgba(251,191,36,.08);color:#d9e2f2;line-height:1.45}.radar-stale-warning b{color:#f7c96b}

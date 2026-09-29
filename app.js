@@ -1,11 +1,14 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.4.3.1';
+  const VERSION = '2.4.3.2';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 90 * 1000;
   const AUTO_REFRESH_MS = 150 * 1000;
   const OPPORTUNITY_TTL = 15 * 60 * 1000;
+  const MARKET_STALE_MS = 10 * 60 * 1000;
+  const API_TIMEOUT_MS = 12000;
+  const TRENDING_TTL = 60 * 60 * 1000;
   const SAFETY_KEY = 'cryptoConte.v2.safety';
   const STABLE_SYMBOLS = new Set(['USDT','USDC','DAI','FDUSD','USDE','USDS','PYUSD','TUSD','USDD','FRAX','EURC','EURT','RLUSD']);
   const NOW_ISO_LOCAL = () => {
@@ -95,6 +98,44 @@
   let watchSearchTimer = null;
   let marketRefreshInFlight = false;
   let opportunityScanInFlight = false;
+  let apiBackoffUntil = 0;
+  let lastApiError = '';
+  const sleep = ms => new Promise(r=>setTimeout(r,ms));
+  const isMarketStale = () => !state.marketCache?.time || Date.now()-num(state.marketCache.time)>MARKET_STALE_MS;
+  const backoffMinutes = () => Math.max(1,Math.ceil((apiBackoffUntil-Date.now())/60000));
+
+  async function cgFetch(url,{optional=false}={}){
+    if(Date.now()<apiBackoffUntil){
+      const e=new Error('API_BACKOFF'); e.code='BACKOFF';
+      if(optional) return null; throw e;
+    }
+    let lastErr=null;
+    for(let attempt=0;attempt<2;attempt++){
+      const ctl=new AbortController();
+      const timer=setTimeout(()=>ctl.abort(),API_TIMEOUT_MS);
+      try{
+        const res=await fetch(url,{headers:{accept:'application/json'},cache:'no-store',signal:ctl.signal});
+        if(res.status===429){
+          const retryHeader=Number(res.headers.get('retry-after')||0);
+          const waitSec=Math.max(180,Number.isFinite(retryHeader)?retryHeader:0);
+          apiBackoffUntil=Date.now()+waitSec*1000; lastApiError='429';
+          const e=new Error('HTTP 429'); e.code=429; throw e;
+        }
+        if((res.status===500||res.status===502||res.status===503||res.status===504)&&attempt===0){
+          lastApiError=String(res.status); await sleep(1200); continue;
+        }
+        if(!res.ok){ const e=new Error('HTTP '+res.status); e.code=res.status; throw e; }
+        lastApiError=''; return res;
+      }catch(err){
+        lastErr=err;
+        if(err?.name==='AbortError') lastApiError='timeout';
+        if(err?.code===429||err?.code==='BACKOFF') break;
+        if(attempt===0&&navigator.onLine!==false){ await sleep(900); continue; }
+      }finally{ clearTimeout(timer); }
+    }
+    if(optional) return null;
+    throw lastErr||new Error('API non disponibile');
+  }
 
   const $ = s => document.querySelector(s);
   const $$ = s => [...document.querySelectorAll(s)];
@@ -504,18 +545,22 @@
     const allSignals=normalizeOpportunitySignals(opp.signals||[]).sort((a,b)=>num(b.time)-num(a.time));
     const activeSignals=allSignals.filter(sig=>!sig.outcome48).slice(0,8);
     const archivedSignals=allSignals.filter(sig=>!!sig.outcome48).slice(0,20);
+    const stale=isMarketStale();
     const signalCard=sig=>{
       const st=signalState(sig);
       return `<details class="signal-card"><summary class="signal-summary"><div><div class="signal-name">${esc(sig.symbol)} · ${esc(sig.name||'')}</div><div class="signal-meta">${fmtDate(sig.time)} · prezzo ${fmtPrice(num(sig.price))}</div><div class="signal-compact">${esc(signalOutcomeSentence(sig.outcome24,'24h'))} · ${esc(signalOutcomeSentence(sig.outcome48,'48h'))}</div></div><span class="status-pill ${st.tone}">${esc(st.label)}</span></summary><div class="signal-detail"><div class="simple-explain"><b>In parole semplici:</b> ${esc(humanSignalExplanation(sig))}</div><div class="technical-box"><b>Dati tecnici</b><div>${esc(sig.reasonLatest||sig.reason||'Dati in aggiornamento')}</div></div><div class="signal-result">${sig.outcome24?esc(signalOutcomeSentence(sig.outcome24,'Dopo 24h')):'Dopo 24h: in attesa'}<br>${sig.outcome48?esc(signalOutcomeSentence(sig.outcome48,'Dopo 48h')):'Dopo 48h: in attesa'}</div><button class="mini-link" data-open-asset="${esc(sig.symbol)}">Apri dettagli crypto</button></div></details>`;
     };
     $('#view-radar').innerHTML=`
       <div class="section-title"><div><h2>Radar Opportunità</h2><p>Scansione automatica del mercato ogni 15 minuti · ultimo scan ${scanTime}</p></div><div class="right"><button class="chip-btn" data-action="scan-opportunities">◎ Scansiona</button></div></div>
+      ${stale?`<div class="radar-stale-warning"><b>Dati non aggiornati:</b> i semafori restano sospesi finché non torna la connessione live. Le card sotto mostrano l’ultima lettura disponibile.</div>`:''}
       <div class="radar-explain"><b>Cosa cerca:</b> volume e sua accelerazione, momentum, forza rispetto a BTC, compressione/breakout e interesse di mercato. Mostra al massimo 3 nuove opportunità non già possedute: la prima è il candidato principale, le altre restano secondarie. Non sono ordini di acquisto.</div>
       <div class="opportunity-list">${(opp.candidates||[]).length?(opp.candidates||[]).map((c,i)=>{
         const owned=ownedSymbols.has(c.symbol), watched=isWatched(c);
         const origin=watched?'SEGNALATA · GIÀ IN WATCHLIST':i===0?'CANDIDATO PRINCIPALE':'SEGNALAZIONE RADAR';
+        const shownStatus=stale?'DATI NON AGGIORNATI':c.status;
+        const shownTone=stale?'observe':(c.tone||candidateTone(c.status));
         return `<article class="opportunity-card" data-open-asset="${esc(c.symbol)}">
-          <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${origin}</div></div><span class="status-pill ${c.tone||candidateTone(c.status)}">${esc(c.status)}</span></div>
+          <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${origin}</div></div><span class="status-pill ${shownTone}">${esc(shownStatus)}</span></div>
           <div class="radar-grid">
             <div class="metric"><span>Prezzo</span><b>${fmtPrice(num(c.current_price))}</b></div>
             <div class="metric"><span>1h</span><b class="${cls(num(c.price_change_percentage_1h_in_currency))}">${fmtPct(c.price_change_percentage_1h_in_currency)}</b></div>
@@ -531,7 +576,7 @@
       <div class="section-title"><div><h2>La mia Watchlist</h2><p>Solo le crypto che hai deciso di seguire</p></div><div class="right"><button class="chip-btn" data-action="add-watch">＋ Watchlist</button></div></div>
       <div class="watch-semaphore-legend"><span class="legend-dot observe"></span>OSSERVA <span class="legend-dot prepare"></span>PREPARATI <span class="legend-dot ready"></span>POSSIBILE INGRESSO <span class="legend-dot stop"></span>NON INSEGUIRE</div>
       <div class="radar-list">${watch.length?watch.map(a=>{
-        const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; const st=watchDecision(m);
+        const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; const st=stale?{label:'DATI NON AGGIORNATI',tone:'observe',reason:'Attendi il ritorno live prima di interpretare il semaforo.'}:watchDecision(m);
         return `<article class="radar-card" data-open-asset="${esc(a.symbol)}">
           <div class="radar-top"><div><div class="radar-title">${esc(a.symbol)} · ${esc(a.name)}</div><div class="radar-sub">WATCHLIST</div></div><div><span class="status-pill ${st.tone}">${esc(st.label)}</span><button class="watch-remove" data-remove-watch-id="${esc(a.id)}">rimuovi</button></div></div>
           <div class="radar-grid">
@@ -996,46 +1041,47 @@
 
   function wantedIds(){
     const snap=portfolioSnapshot();
-    const ids=new Set(['bitcoin','ethereum',...snap.positions.map(p=>p.id),...(state.watchlistIds||[]),...(state.opportunity?.candidates||[]).map(c=>c.id)]);
-    (state.opportunity?.signals||[]).filter(sig=>Date.now()-num(sig.time)<50*3600000).forEach(sig=>ids.add(sig.id));
-    return [...ids].filter(Boolean);
+    const primary=['bitcoin','ethereum',...snap.positions.map(p=>p.id),...(state.watchlistIds||[]),...(state.opportunity?.candidates||[]).map(c=>c.id)];
+    const recentSignals=(state.opportunity?.signals||[]).filter(sig=>Date.now()-num(sig.time)<50*3600000).sort((a,b)=>num(b.time)-num(a.time)).slice(0,20).map(sig=>sig.id);
+    return [...new Set([...primary,...recentSignals].filter(Boolean))].slice(0,80);
   }
   async function scanOpportunities(force=false){
-    if(opportunityScanInFlight) return;
+    if(opportunityScanInFlight) return false;
     const opp=state.opportunity||defaultState().opportunity;
-    if(!force&&Date.now()-num(opp.time)<OPPORTUNITY_TTL){ (opp.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c}); return; }
+    if(!force&&Date.now()-num(opp.time)<OPPORTUNITY_TTL){ (opp.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c}); return true; }
+    if(Date.now()<apiBackoffUntil){ toast(`Radar in pausa API · riprovo tra circa ${backoffMinutes()} min`); setDataStatus('backoff'); renderAll(); return false; }
     opportunityScanInFlight=true;
     const btn=$('[data-action="scan-opportunities"]'); if(btn){btn.disabled=true;btn.textContent='scansione…';}
     try{
+      // RC4.3.2: meno richieste e mai a raffica. Usiamo le 250 crypto più scambiate,
+      // poi approfondiamo solo i candidati migliori.
       const common='vs_currency=eur&per_page=250&page=1&sparkline=false&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full';
-      const capUrl=`https://api.coingecko.com/api/v3/coins/markets?${common}&order=market_cap_desc`;
       const volumeUrl=`https://api.coingecko.com/api/v3/coins/markets?${common}&order=volume_desc`;
       const trendUrl='https://api.coingecko.com/api/v3/search/trending';
-      const [capRes,volRes,tr]=await Promise.all([
-        fetch(capUrl,{headers:{accept:'application/json'},cache:'no-store'}),
-        fetch(volumeUrl,{headers:{accept:'application/json'},cache:'no-store'}),
-        fetch(trendUrl,{headers:{accept:'application/json'},cache:'no-store'})
-      ]);
-      if(!capRes.ok&&!volRes.ok) throw new Error('Radar discovery non disponibile');
-      const capRows=capRes.ok?await capRes.json():[];
-      const volRows=volRes.ok?await volRes.json():[];
-      let trendingIds=new Set();
-      if(tr.ok){ const td=await tr.json(); trendingIds=new Set((td.coins||[]).map(x=>x.item?.id).filter(Boolean)); }
+      const volRes=await cgFetch(volumeUrl);
+      const rows=await volRes.json();
 
-      const universeMap=new Map(); [...capRows,...volRows].forEach(x=>{if(x?.id)universeMap.set(x.id,x);});
-      const rows=[...universeMap.values()];
+      let trendingIds=new Set(opp.trending||[]);
+      let trendingAt=num(opp.trendingAt);
+      if(!trendingAt||Date.now()-trendingAt>TRENDING_TTL){
+        await sleep(700);
+        const tr=await cgFetch(trendUrl,{optional:true});
+        if(tr){ const td=await tr.json(); trendingIds=new Set((td.coins||[]).map(x=>x.item?.id).filter(Boolean)); trendingAt=Date.now(); }
+      }
+
+      const universeMap=new Map(); rows.forEach(x=>{if(x?.id)universeMap.set(x.id,x);});
       const btc=universeMap.get('bitcoin')||market.bitcoin||{}; const prev=opp.prev||{};
       const ownedIds=new Set(portfolioSnapshot().positions.map(p=>p.id));
       const eligible=rows.filter(x=>x.id!=='bitcoin'&&!ownedIds.has(x.id)&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000&&(num(x.market_cap)>=20_000_000||num(x.total_volume)>=8_000_000));
-      const screened=eligible.map(x=>screenOpportunity(x,btc,prev[x.id],trendingIds)).sort((a,b)=>b._screenScore-a._screenScore||num(b.total_volume)-num(a.total_volume)).slice(0,40);
+      const screened=eligible.map(x=>screenOpportunity(x,btc,prev[x.id],trendingIds)).sort((a,b)=>b._screenScore-a._screenScore||num(b.total_volume)-num(a.total_volume)).slice(0,36);
 
       const detailIds=new Set(screened.map(x=>x.id));
-      [...trendingIds].slice(0,15).forEach(id=>detailIds.add(id));
       const detailUrl=`https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&ids=${encodeURIComponent([...detailIds].join(','))}&order=market_cap_desc&sparkline=true&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full`;
       let detailRows=[];
       if(detailIds.size){
-        const dr=await fetch(detailUrl,{headers:{accept:'application/json'},cache:'no-store'});
-        if(dr.ok) detailRows=await dr.json();
+        await sleep(900);
+        const dr=await cgFetch(detailUrl,{optional:true});
+        if(dr) detailRows=await dr.json();
       }
       const detailMap=new Map(detailRows.map(x=>[x.id,x]));
       const candidatePool=[...new Map([...screened.map(x=>[x.id,detailMap.get(x.id)||x]),...detailRows.map(x=>[x.id,x])]).values()];
@@ -1043,22 +1089,31 @@
       assessed.sort((a,b)=>{const rank={'POSSIBILE INGRESSO':4,PREPARATI:3,INTERESSANTE:3,OSSERVA:2,'NON INSEGUIRE':1};return ((rank[b.status]||0)-(rank[a.status]||0))||(b.score-a.score)||(num(b.total_volume)-num(a.total_volume));});
       const candidates=assessed.slice(0,3);
       const now=Date.now(),nextPrev={}; rows.forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)}); detailRows.forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)});
-      updateSignalOutcomes(detailRows.length?detailRows:rows); state.opportunity={...opp,time:now,candidates,prev:nextPrev,trending:[...trendingIds],signals:state.opportunity.signals||[]}; recordOpportunitySignals(candidates);
+      updateSignalOutcomes(detailRows.length?detailRows:rows); state.opportunity={...opp,time:now,candidates,prev:nextPrev,trending:[...trendingIds],trendingAt,signals:state.opportunity.signals||[]}; recordOpportunitySignals(candidates);
       candidates.forEach(c=>market[c.id]={...market[c.id],...c}); saveState(); renderAll(); toast(candidates.length?`Radar: ${candidates.length} opportunità selezionate`:'Radar: nessun segnale pulito al momento');
-    }catch(_){ toast('Radar Opportunità: scansione non disponibile, riproverà automaticamente'); }
+      return true;
+    }catch(err){
+      if(err?.code===429||err?.code==='BACKOFF') toast(`CoinGecko ha limitato le richieste · riprovo tra circa ${backoffMinutes()} min`);
+      else toast('Radar temporaneamente non disponibile: mantengo gli ultimi dati e riprovo');
+      if(isMarketStale()) setDataStatus(Date.now()<apiBackoffUntil?'backoff':'error');
+      renderAll(); return false;
+    }
     finally{ opportunityScanInFlight=false; const b=$('[data-action="scan-opportunities"]');if(b){b.disabled=false;b.textContent='◎ Scansiona';} }
   }
   async function refreshMarket(force=false){
-    if(marketRefreshInFlight) return;
+    if(marketRefreshInFlight) return false;
     const status=$('#dataStatus');
-    if(!force && Date.now()-num(state.marketCache?.time)<MARKET_TTL){ market={...BASELINE.seedMarket,...(state.marketCache.data||{})}; (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c}); setDataStatus('cache'); renderAll(); scanOpportunities(false); return; }
+    if(!force && Date.now()-num(state.marketCache?.time)<MARKET_TTL){ market={...BASELINE.seedMarket,...(state.marketCache.data||{})}; (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c}); setDataStatus('cache'); renderAll(); return true; }
+    if(Date.now()<apiBackoffUntil){ market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; setDataStatus('backoff'); renderAll(); return false; }
     marketRefreshInFlight=true; status.className='data-status'; status.innerHTML='<span class="dot"></span><span>aggiorno prezzi e trend…</span>';
     try{
       const ids=wantedIds();
       const url=`https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&ids=${encodeURIComponent(ids.join(','))}&order=market_cap_desc&sparkline=true&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full`;
-      const res=await fetch(url,{headers:{accept:'application/json'},cache:'no-store'}); if(!res.ok) throw new Error('HTTP '+res.status);
-      const arr=await res.json(); const data={...market}; arr.forEach(x=>data[x.id]=x); market=data; updateSignalOutcomes(arr); state.marketCache={time:Date.now(),data}; saveState(); setDataStatus('live'); renderAll(); scanOpportunities(false);
-    }catch(err){ market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c}); setDataStatus('error'); renderAll(); }
+      const res=await cgFetch(url); const arr=await res.json(); const data={...market}; arr.forEach(x=>data[x.id]=x); market=data; updateSignalOutcomes(arr); state.marketCache={time:Date.now(),data}; saveState(); setDataStatus('live'); renderAll(); return true;
+    }catch(err){
+      market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c});
+      setDataStatus(Date.now()<apiBackoffUntil?'backoff':'error'); renderAll(); return false;
+    }
     finally{ marketRefreshInFlight=false; }
   }
 
@@ -1066,7 +1121,8 @@
     const el=$('#dataStatus'); if(!el)return;
     const t=state.marketCache?.time?new Intl.DateTimeFormat('it-IT',{hour:'2-digit',minute:'2-digit'}).format(new Date(state.marketCache.time)):'baseline';
     if(mode==='live') el.className='data-status live',el.innerHTML=`<span class="dot"></span><span>live · auto 2m30s · aggiornato ${t}</span>`;
-    else if(mode==='error') el.className='data-status error',el.innerHTML=`<span class="dot"></span><span>dati cached · ultimo aggiornamento ${t}</span>`;
+    else if(mode==='backoff') el.className='data-status error',el.innerHTML=`<span class="dot"></span><span>API in pausa · cache ${t} · riprovo ~${backoffMinutes()} min</span>`;
+    else if(mode==='error') el.className='data-status error',el.innerHTML=`<span class="dot"></span><span>dati non aggiornati · ultimo live ${t}</span>`;
     else el.className='data-status',el.innerHTML=`<span class="dot"></span><span>cache · auto 2m30s · ${t}</span>`;
   }
 
@@ -1078,17 +1134,17 @@
     renderAll(); showView(state.ui.lastView||'home');
     $$('.nav-btn[data-view]').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));
     $('.nav-main').addEventListener('click',()=>openOpSheet());
-    $('#refreshBtn').addEventListener('click',()=>{refreshMarket(true);scanOpportunities(false);});
+    $('#refreshBtn').addEventListener('click',async()=>{apiBackoffUntil=0;const ok=await refreshMarket(true);if(ok)setTimeout(()=>scanOpportunities(false),8000);});
     $('#sheetBackdrop').addEventListener('click',closeSheets); $$('[data-close-sheet]').forEach(b=>b.addEventListener('click',closeSheets));
     $('#opType').addEventListener('change',updateOpFields); $('#opAccount').addEventListener('change',updateOpFields); $('#opAsset').addEventListener('change',updateOpFields); $('#opQty').addEventListener('input',updateSalePreview); $('#opAmount').addEventListener('input',updateSalePreview); $('#opFee').addEventListener('input',updateSalePreview); $('#opForm').addEventListener('submit',saveOperation); $('#noteForm').addEventListener('submit',saveNote);
     $('#watchSearch').addEventListener('input',e=>{clearTimeout(watchSearchTimer);const q=e.target.value;watchSearchTimer=setTimeout(()=>searchWatch(q),350);});
     $('#restoreInput').addEventListener('change',e=>{const f=e.target.files?.[0];if(f)restoreBackup(f);e.target.value='';});
-    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){if(Date.now()-num(state.marketCache?.time)>45000)refreshMarket(true);scanOpportunities(false);}});
-    window.addEventListener('online',()=>{refreshMarket(true);scanOpportunities(false);});
+    document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){if(Date.now()-num(state.marketCache?.time)>45000)refreshMarket(true);setTimeout(()=>scanOpportunities(false),9000);}});
+    window.addEventListener('online',()=>{apiBackoffUntil=0;refreshMarket(true);setTimeout(()=>scanOpportunities(false),9000);});
     setInterval(()=>{if(document.visibilityState==='visible')refreshMarket(true);},AUTO_REFRESH_MS);
-    setInterval(()=>{if(document.visibilityState==='visible')scanOpportunities(false);},OPPORTUNITY_TTL);
+    setTimeout(()=>{ if(document.visibilityState==='visible')scanOpportunities(false); setInterval(()=>{if(document.visibilityState==='visible')scanOpportunities(false);},OPPORTUNITY_TTL); },12000);
     if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
-    refreshMarket(false); scanOpportunities(false);
+    refreshMarket(false);
   }
 
   document.addEventListener('DOMContentLoaded',init);

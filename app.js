@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.4.3.4';
+  const VERSION = '2.5.0';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 4 * 60 * 1000;
   const AUTO_REFRESH_MS = 5 * 60 * 1000;
@@ -87,6 +87,7 @@
     customAssets: [],
     marketCache: {time:0,data:{...BASELINE.seedMarket}},
     opportunity: {time:0,candidates:[],prev:{},signals:[],trending:[]},
+    decision: {peaks:{},samples:{}},
     ui: {lastView:'home'}
   });
 
@@ -236,7 +237,7 @@
       if(!raw) return defaultState();
       const saved = JSON.parse(raw);
       const base = defaultState();
-      const merged = {...base,...saved,ui:{...base.ui,...(saved.ui||{})},marketCache:saved.marketCache||base.marketCache,opportunity:{...base.opportunity,...(saved.opportunity||{})}};
+      const merged = {...base,...saved,ui:{...base.ui,...(saved.ui||{})},marketCache:saved.marketCache||base.marketCache,opportunity:{...base.opportunity,...(saved.opportunity||{})},decision:{...base.decision,...(saved.decision||{}),peaks:{...(base.decision.peaks||{}),...(saved.decision?.peaks||{})},samples:{...(base.decision.samples||{}),...(saved.decision?.samples||{})}}};
       if(!Array.isArray(saved.watchlistIds)){
         merged.watchlistIds=(saved.watchlist||[]).map(sym=>CATALOG.find(a=>a.symbol===String(sym).toUpperCase())?.id).filter(Boolean);
       }
@@ -254,7 +255,7 @@
   function restoreCheckpoint(){
     const cp=getCheckpoint(); if(!cp?.state){toast('Nessun punto sicurezza disponibile');return;}
     if(!confirm(`Ripristinare il punto sicurezza “${cp.label||'salvataggio'}”?`)) return;
-    state={...defaultState(),...cp.state,opportunity:{...defaultState().opportunity,...(cp.state.opportunity||{})}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll(); refreshMarket(true); toast('Punto sicurezza ripristinato');
+    state={...defaultState(),...cp.state,opportunity:{...defaultState().opportunity,...(cp.state.opportunity||{})},decision:{...defaultState().decision,...(cp.state.decision||{}),peaks:{...(cp.state.decision?.peaks||{})},samples:{...(cp.state.decision?.samples||{})}}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll(); refreshMarket(true); toast('Punto sicurezza ripristinato');
   }
 
   function allAssets(){
@@ -378,6 +379,134 @@
     return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><path class="area" d="${area}"></path><path class="line" d="${line}"></path></svg>`;
   }
 
+
+  function changeToPastPrice(current,pct){
+    if(!Number.isFinite(current)||current<=0||!Number.isFinite(pct)||pct<=-99.9) return null;
+    return current/(1+pct/100);
+  }
+  function localSamplesFor(id,days=7){
+    const rows=(state.decision?.samples?.[id]||[]).filter(x=>Number.isFinite(num(x?.price))&&Number.isFinite(num(x?.time)));
+    const cutoff=Date.now()-days*86400000;
+    return rows.filter(x=>num(x.time)>=cutoff).map(x=>num(x.price));
+  }
+  function syntheticTrend(m,range='7d'){
+    const p=num(m?.current_price);
+    if(!p) return [];
+    const h=Number(m?.price_change_percentage_1h_in_currency);
+    const d=Number(m?.price_change_percentage_24h_in_currency);
+    const w=Number(m?.price_change_percentage_7d_in_currency);
+    const mo=Number(m?.price_change_percentage_30d_in_currency);
+    const points=[];
+    const pushPast = pct => { const v=changeToPastPrice(p,pct); if(Number.isFinite(v)) points.push(v); };
+    if(range==='30d') pushPast(mo);
+    if(range==='30d'||range==='7d') pushPast(w);
+    if(range==='30d'||range==='7d'||range==='1d') pushPast(d);
+    pushPast(h);
+    points.push(p);
+    return points.filter(Number.isFinite);
+  }
+  function trendValuesFor(id,m,range='7d'){
+    const spark=(m?.sparkline_in_7d?.price||[]).filter(Number.isFinite);
+    if(range==='7d'&&spark.length>=4) return {values:spark,mode:'7d reale'};
+    const days=range==='1d'?1:range==='30d'?30:7;
+    const local=localSamplesFor(id,days);
+    if(local.length>=3) return {values:local,mode:'campionato dall’app'};
+    if(range==='since') return {values:[],mode:'in costruzione'};
+    return {values:syntheticTrend(m,range),mode:'sintetico'};
+  }
+  function trendCaption(m,mode){
+    const h=m?.price_change_percentage_1h_in_currency,d=m?.price_change_percentage_24h_in_currency,w=m?.price_change_percentage_7d_in_currency;
+    const label=mode==='sintetico'?'direzione sintetica':'trend';
+    return `${label} · 1h ${fmtPct(h)} · 24h ${fmtPct(d)} · 7g ${fmtPct(w)}`;
+  }
+  function recordDecisionTracking(){
+    state.decision=state.decision||{peaks:{},samples:{}};
+    state.decision.peaks=state.decision.peaks||{};
+    state.decision.samples=state.decision.samples||{};
+    const snap=portfolioSnapshot();
+    const now=Date.now();
+    let changed=false;
+
+    const liveKeys=new Set();
+    snap.positions.forEach(p=>{
+      const price=currentPrice(p);
+      if(!price) return;
+      const key=positionPeakKey(p);
+      liveKeys.add(key);
+      const pct=positionPnlPct(p);
+      const prev=state.decision.peaks[key];
+      const avgChanged=prev&&Math.abs(num(prev.avg)-num(p.avg))>Math.max(1e-12,Math.abs(num(p.avg))*0.00001);
+      if(!prev||avgChanged){
+        state.decision.peaks[key]={peakPct:pct,peakPrice:price,time:now,avg:p.avg};
+        changed=true;
+      }else if(pct>num(prev.peakPct)+0.0001){
+        state.decision.peaks[key]={...prev,peakPct:pct,peakPrice:price,time:now,avg:p.avg};
+        changed=true;
+      }
+    });
+    Object.keys(state.decision.peaks).forEach(k=>{
+      if(!liveKeys.has(k) && Date.now()-num(state.decision.peaks[k]?.time)>30*86400000){
+        delete state.decision.peaks[k]; changed=true;
+      }
+    });
+
+    const ids=new Set(['bitcoin',...snap.positions.map(p=>p.id),...(state.watchlistIds||[]),...(state.opportunity?.candidates||[]).map(c=>c.id)].filter(Boolean));
+    ids.forEach(id=>{
+      const m=market[id]||state.marketCache?.data?.[id];
+      const price=num(m?.current_price);
+      if(!price) return;
+      const rows=Array.isArray(state.decision.samples[id])?state.decision.samples[id]:[];
+      const last=rows[rows.length-1];
+      if(!last||now-num(last.time)>=20*60*1000){
+        const fresh=[...rows,{time:now,price}].filter(x=>now-num(x.time)<=8*86400000).slice(-600);
+        state.decision.samples[id]=fresh; changed=true;
+      }
+    });
+    if(changed) saveState();
+  }
+  function positionPeakKey(p){ return `${p.account}:${p.id||p.symbol}:${p.openedAt||''}`; }
+  function getPositionPeak(p){
+    const pct=positionPnlPct(p),price=currentPrice(p);
+    const rec=state.decision?.peaks?.[positionPeakKey(p)];
+    const peakPct=rec?Math.max(pct,num(rec.peakPct)):pct;
+    return {peakPct,peakPrice:rec?num(rec.peakPrice)||price:price,time:rec?.time||Date.now(),pullback:Math.max(0,peakPct-pct)};
+  }
+  function mark(v,good,bad){
+    if(!Number.isFinite(v)) return 'neutral';
+    if(v>=good) return 'good';
+    if(v<=bad) return 'bad';
+    return 'neutral';
+  }
+  function decisionChecksHTML(checks){
+    return `<div class="decision-checks">${checks.map(c=>`<span class="decision-check ${esc(c.state||'neutral')}">${c.state==='good'?'✓':c.state==='bad'?'✕':'~'} ${esc(c.label)}</span>`).join('')}</div>`;
+  }
+  function positionDecision(p,m){
+    const pct=positionPnlPct(p);
+    const h=num(m?.price_change_percentage_1h_in_currency),d=num(m?.price_change_percentage_24h_in_currency),w=num(m?.price_change_percentage_7d_in_currency);
+    const btc=market.bitcoin||{};
+    const rel=d-num(btc?.price_change_percentage_24h_in_currency);
+    const peak=getPositionPeak(p);
+    const weakening=h<-.25||d<-.75||rel<-.75;
+    let label='MANTIENI',tone='observe',reason='Nessun segnale forte di uscita: continua a monitorare il trend e il prezzo rispetto al tuo carico.';
+    if((pct<=-10&&d<=-2&&rel<=-1)||(pct<=-8&&w<=-8&&d<0)){
+      label='ATTENZIONE'; tone='stop'; reason='La posizione è in perdita e il movimento resta debole: serve attenzione prima di aumentare l’esposizione.';
+    }else if(pct>=8&&((peak.peakPct>=10&&peak.pullback>=4&&weakening)||(pct>=18&&weakening))){
+      label='VALUTA PRESA PROFITTO'; tone='warn'; reason=`Il profitto resta positivo, ma hai restituito ${peak.pullback.toFixed(1)} punti dal massimo registrato e almeno un segnale sta rallentando.`;
+    }else if(pct>=7&&(peak.pullback>=2.5||weakening)){
+      label='CONTROLLA PROFITTO'; tone='prepare'; reason='Sei in profitto, ma momentum, forza relativa o distanza dal massimo meritano un controllo più ravvicinato.';
+    }else if(pct>=5){
+      label='IN PROFITTO'; tone='ready'; reason='La posizione è in profitto e non emerge ancora un segnale forte di uscita.';
+    }
+    const checks=[
+      {label:`P/L ${fmtPct(pct)}`,state:mark(pct,5,-7)},
+      {label:`24h ${fmtPct(d)}`,state:mark(d,1.5,-1.5)},
+      {label:`7g ${fmtPct(w)}`,state:mark(w,3,-3)},
+      {label:`vs BTC ${fmtPct(rel)}`,state:mark(rel,1,-1)},
+      {label:`dal max -${peak.pullback.toFixed(1)} pt`,state:peak.pullback<=1.5?'good':peak.pullback>=4?'bad':'neutral'}
+    ];
+    return {label,tone,reason,checks,...peak,rel};
+  }
+
   function radarStatus(m){
     const h=num(m?.price_change_percentage_1h_in_currency), d=num(m?.price_change_percentage_24h_in_currency), w=num(m?.price_change_percentage_7d_in_currency);
     if(Math.abs(d)>=8 || Math.abs(w)>=18) return {label:'MOVIMENTO FORTE',tone:'warn'};
@@ -400,12 +529,26 @@
     const btc=market.bitcoin||{};
     const h=num(m?.price_change_percentage_1h_in_currency), d=num(m?.price_change_percentage_24h_in_currency), w=num(m?.price_change_percentage_7d_in_currency);
     const bd=num(btc?.price_change_percentage_24h_in_currency), rel=d-bd;
-    const tooFast=h>=4.5||d>=12||(w>=25&&d>=4);
-    if(tooFast) return {label:'NON INSEGUIRE',tone:'stop',reason:'movimento già molto esteso: meglio osservare senza rincorrere il prezzo'};
-    if(h>=0.20&&h<=3.5&&d>=1.5&&d<=8&&rel>=1) return {label:'POSSIBILE INGRESSO',tone:'ready',reason:'momentum positivo e forza relativa a BTC: merita un approfondimento prima di qualsiasi decisione'};
-    if(d>=0.5&&rel>=0.25) return {label:'PREPARATI',tone:'prepare',reason:'sta migliorando rispetto al mercato, ma manca ancora una conferma più netta'};
-    if(d<=-6&&h<0) return {label:'OSSERVA',tone:'observe',reason:'fase debole: seguila senza anticipare un recupero'};
-    return {label:'OSSERVA',tone:'observe',reason:'nessun segnale abbastanza pulito: resta in osservazione'};
+    const cap=num(m?.market_cap),vol=num(m?.total_volume),volRatio=cap>0?vol/cap:null;
+    const tooFast=h>=4.5||d>=12||w>=30||(w>=20&&d>=4);
+    let label='OSSERVA',tone='observe',reason='nessun segnale abbastanza pulito: resta in osservazione';
+    if(tooFast){
+      label='NON INSEGUIRE';tone='stop';reason='movimento già molto esteso: meglio osservare senza rincorrere il prezzo';
+    }else if(h>=0.20&&h<=3.5&&d>=1.5&&d<=8&&rel>=1&&w>-8){
+      label='POSSIBILE INGRESSO';tone='ready';reason='momentum positivo, forza relativa a BTC e movimento ancora non troppo esteso: merita un approfondimento';
+    }else if(d>=0.5&&rel>=0.25&&h>=-.5){
+      label='PREPARATI';tone='prepare';reason='sta migliorando rispetto al mercato, ma manca ancora una conferma più netta';
+    }else if(d<=-6&&h<0){
+      label='OSSERVA';tone='observe';reason='fase debole: seguila senza anticipare un recupero';
+    }
+    const checks=[
+      {label:`Momentum ${fmtPct(d)}`,state:mark(d,1.5,-1.5)},
+      {label:`vs BTC ${fmtPct(rel)}`,state:mark(rel,1,-1)},
+      {label:`Trend 7g ${fmtPct(w)}`,state:mark(w,3,-3)},
+      {label:'Volume',state:volRatio==null?'neutral':volRatio>=.10?'good':volRatio<.03?'bad':'neutral'},
+      {label:'Estensione',state:tooFast?'bad':'good'}
+    ];
+    return {label,tone,reason,checks,rel,tooFast,volRatio};
   }
   function humanSignalExplanation(sig){
     const r=String(sig.reasonLatest||sig.reason||'').toLowerCase();
@@ -607,13 +750,16 @@
     const m=mktFor(p), value=positionValue(p), pnl=positionPnl(p), pct=positionPnlPct(p), day=m?.price_change_percentage_24h_in_currency;
     const key=`${p.account}:${p.symbol}`, realized=s.realizedByKey[key]||0, soldCost=s.soldCost[key]||0;
     const totalPnl=realized+pnl, totalBasis=soldCost+positionCost(p), totalPct=totalBasis?totalPnl/totalBasis*100:pct;
+    const dec=positionDecision(p,m);
+    const trend=trendValuesFor(p.id,m,'7d');
     return `<article class="asset-card" data-open-asset="${esc(p.symbol)}">
-      <div class="asset-head"><div class="asset-name">${esc(p.symbol)} · ${esc(p.name)}</div><span class="status-pill ${totalPct>=5?'good':totalPct<=-5?'bad':''}">${totalPct>=5?'IN PROFITTO':totalPct<=-5?'SOTTO CARICO':'IN EQUILIBRIO'}</span></div>
+      <div class="asset-head"><div class="asset-name">${esc(p.symbol)} · ${esc(p.name)}</div><span class="status-pill ${dec.tone}">${esc(dec.label)}</span></div>
       <div class="asset-value">${fmtEUR(value)}</div>
       <div class="asset-pnl ${cls(pnl)}">Latente ${fmtEUR(pnl)} · ${fmtPct(pct)}</div>
       ${soldCost>0?`<div class="asset-total ${cls(totalPnl)}">Totale asset ${fmtEUR(totalPnl)} · ${fmtPct(totalPct)}</div>`:''}
       <div class="asset-meta">24h <span class="${cls(num(day))}">${fmtPct(day)}</span> · prezzo ${fmtPrice(currentPrice(p))}</div>
-      <div class="spark">${sparkSVG(m?.sparkline_in_7d?.price)}</div>
+      <div class="asset-peak">Max RC5 ${fmtPct(dec.peakPct)} · dal max −${dec.pullback.toFixed(1)} pt</div>
+      <div class="spark">${sparkSVG(trend.values)}</div>
       <div class="tag">tocca per dettagli</div>
     </article>`;
   }
@@ -639,8 +785,10 @@
       <div class="opportunity-list">${(opp.candidates||[]).length?(opp.candidates||[]).map((c,i)=>{
         const owned=ownedSymbols.has(c.symbol), watched=isWatched(c);
         const origin=watched?'SEGNALATA · GIÀ IN WATCHLIST':i===0?'CANDIDATO PRINCIPALE':'SEGNALAZIONE RADAR';
-        const shownStatus=stale?'DATI NON AGGIORNATI':c.status;
-        const shownTone=stale?'observe':(c.tone||candidateTone(c.status));
+        const entry=watchDecision(c);
+        const shownStatus=stale?'DATI NON AGGIORNATI':entry.label;
+        const shownTone=stale?'observe':entry.tone;
+        const trend=trendValuesFor(c.id,c,'7d');
         return `<article class="opportunity-card" data-open-asset="${esc(c.symbol)}">
           <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${origin}</div></div><span class="status-pill ${shownTone}">${esc(shownStatus)}</span></div>
           <div class="radar-grid">
@@ -649,8 +797,10 @@
             <div class="metric"><span>24h</span><b class="${cls(num(c.price_change_percentage_24h_in_currency))}">${fmtPct(c.price_change_percentage_24h_in_currency)}</b></div>
             <div class="metric"><span>vs BTC 24h</span><b class="${cls(num(c.rel24))}">${fmtPct(c.rel24)}</b></div>
           </div>
-          <div class="spark">${sparkSVG(c.sparkline_in_7d?.price)}</div>
-          <div class="radar-reason"><b>Lettura:</b> ${esc(c.decisionReason||watchDecision(c).reason)}<br><b>Perché lo sto guardando:</b> ${esc(c.reason)}</div>
+          <div class="spark">${sparkSVG(trend.values)}</div>
+          <div class="trend-caption">${esc(trendCaption(c,trend.mode))}</div>
+          ${decisionChecksHTML(entry.checks)}
+          <div class="radar-reason"><b>Lettura:</b> ${esc(entry.reason)}<br><b>Perché lo sto guardando:</b> ${esc(c.reason)}</div>
           ${!owned&&!watched?`<div class="opportunity-actions"><button data-watch-candidate="${esc(c.id)}">＋ Aggiungi alla watchlist</button></div>`:''}
         </article>`;
       }).join(''):'<div class="empty">Nessun segnale abbastanza pulito nell’ultima scansione. Il Radar continuerà a controllare automaticamente.</div>'}</div>
@@ -658,7 +808,8 @@
       <div class="section-title"><div><h2>La mia Watchlist</h2><p>Solo le crypto che hai deciso di seguire</p></div><div class="right"><button class="chip-btn" data-action="add-watch">＋ Watchlist</button></div></div>
       <div class="watch-semaphore-legend"><span class="legend-dot observe"></span>OSSERVA <span class="legend-dot prepare"></span>PREPARATI <span class="legend-dot ready"></span>POSSIBILE INGRESSO <span class="legend-dot stop"></span>NON INSEGUIRE</div>
       <div class="radar-list">${watch.length?watch.map(a=>{
-        const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; const st=stale?{label:'DATI NON AGGIORNATI',tone:'observe',reason:'Attendi il ritorno live prima di interpretare il semaforo.'}:watchDecision(m);
+        const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; const real=watchDecision(m); const st=stale?{label:'DATI NON AGGIORNATI',tone:'observe',reason:'Attendi il ritorno live prima di interpretare il semaforo.',checks:real.checks}:real;
+        const trend=trendValuesFor(a.id,m,'7d');
         return `<article class="radar-card" data-open-asset="${esc(a.symbol)}">
           <div class="radar-top"><div><div class="radar-title">${esc(a.symbol)} · ${esc(a.name)}</div><div class="radar-sub">WATCHLIST</div></div><div><span class="status-pill ${st.tone}">${esc(st.label)}</span><button class="watch-remove" data-remove-watch-id="${esc(a.id)}">rimuovi</button></div></div>
           <div class="radar-grid">
@@ -667,7 +818,9 @@
             <div class="metric"><span>24h</span><b class="${cls(num(m.price_change_percentage_24h_in_currency))}">${fmtPct(m.price_change_percentage_24h_in_currency)}</b></div>
             <div class="metric"><span>7g</span><b class="${cls(num(m.price_change_percentage_7d_in_currency))}">${fmtPct(m.price_change_percentage_7d_in_currency)}</b></div>
           </div>
-          <div class="spark">${sparkSVG(m?.sparkline_in_7d?.price)}</div>
+          <div class="spark">${sparkSVG(trend.values)}</div>
+          <div class="trend-caption">${esc(trendCaption(m,trend.mode))}</div>
+          ${decisionChecksHTML(st.checks||[])}
           <div class="watch-why"><b>${esc(st.label)}:</b> ${esc(st.reason)}</div>
         </article>`;
       }).join(''):'<div class="empty">La watchlist è vuota. Aggiungi una crypto dal Radar Opportunità oppure con ＋ Watchlist.</div>'}</div>
@@ -728,7 +881,10 @@
     ['Radar, non ordini','Gli stati del Radar e il semaforo della watchlist sono filtri didattici: servono per capire dove guardare e cosa approfondire, non sono ordini automatici.'],
     ['Forza relativa vs BTC','Confronta il movimento di una crypto con Bitcoin. Se fa +5% mentre BTC fa +1%, la forza relativa sulle 24h è circa +4 punti percentuali.'],
     ['NON INSEGUIRE','Segnala un movimento già molto esteso. Non significa che la crypto debba scendere: ricorda semplicemente di non confondere una forte corsa già avvenuta con un segnale iniziale.'],
-    ['Cosa sarebbe successo?','La card resta compatta e si apre al tocco: mostra in parole semplici perché il segnale è nato, i dati tecnici e il confronto dopo 24h e 48h.']
+    ['Cosa sarebbe successo?','La card resta compatta e si apre al tocco: mostra in parole semplici perché il segnale è nato, i dati tecnici e il confronto dopo 24h e 48h.'],
+    ['Semaforo posizione','MANTIENI, IN PROFITTO, CONTROLLA PROFITTO, VALUTA PRESA PROFITTO e ATTENZIONE combinano P/L, trend, forza vs BTC e distanza dal massimo. Non sono ordini automatici.'],
+    ['Massimo registrato','RC5 memorizza il miglior P/L visto da quando la funzione è attiva. Se il profitto arretra dal massimo mentre momentum e forza peggiorano, il semaforo diventa più prudente.'],
+    ['Trend nel Radar','Quando la fonte non offre una serie completa, RC5 mostra una direzione sintetica costruita dai dati reali 7g, 24h e 1h. Con l’uso, l’app accumula anche campioni propri e il grafico diventa più dettagliato.']
   ];
   function renderSchool(){
     $('#view-school').innerHTML=`
@@ -812,7 +968,7 @@
   function renderAssetSheet(){
     const a=currentSheetAsset; if(!a) return;
     const s=portfolioSnapshot(); const pos=s.positions.find(p=>p.symbol===a.symbol && (!a.account||p.account===a.account));
-    const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; const owned=!!pos; const st=radarStatus(m);
+    const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; const owned=!!pos; const st=owned?positionDecision(pos,m):watchDecision(m);
     const pnl=owned?positionPnl(pos):0,pct=owned?positionPnlPct(pos):0;
     const key=owned?`${pos.account}:${pos.symbol}`:'';
     const realized=owned?(s.realizedByKey[key]||0):0;
@@ -833,7 +989,19 @@
           <div class="detail-box"><span>30 giorni</span><b class="${cls(num(m.price_change_percentage_30d_in_currency))}">${fmtPct(m.price_change_percentage_30d_in_currency)}</b></div>
         </div>
       </div>
-      ${owned?`<div class="sheet-section"><div class="eyebrow">LA TUA POSIZIONE</div><div class="detail-grid">
+      ${!owned?`<div class="sheet-section"><div class="eyebrow">GUIDA INGRESSO</div><div class="decision-panel ${st.tone}">
+        <div class="decision-title"><span class="status-pill ${st.tone}">${esc(st.label)}</span><b>Supporto Radar</b></div>
+        <p>${esc(st.reason)}</p>
+        ${decisionChecksHTML(st.checks||[])}
+        <small>Il semaforo serve a capire cosa approfondire, non è un ordine di acquisto.</small>
+      </div></div>`:''}
+      ${owned?`<div class="sheet-section"><div class="eyebrow">GUIDA POSIZIONE</div><div class="decision-panel ${st.tone}">
+        <div class="decision-title"><span class="status-pill ${st.tone}">${esc(st.label)}</span><b>Supporto decisionale</b></div>
+        <p>${esc(st.reason)}</p>
+        <div class="decision-peak"><span>Massimo P/L registrato da RC5</span><b>${fmtPct(st.peakPct)}</b><span>Ritracciamento dal massimo</span><b>−${st.pullback.toFixed(1)} pt</b></div>
+        ${decisionChecksHTML(st.checks)}
+        <small>È una lettura dei dati, non un ordine di vendita. La decisione finale resta tua.</small>
+      </div></div><div class="sheet-section"><div class="eyebrow">LA TUA POSIZIONE</div><div class="detail-grid">
         <div class="detail-box"><span>Quantità residua</span><b>${fmtQty(pos.qty)} ${esc(pos.symbol)}</b></div>
         <div class="detail-box"><span>Prezzo medio</span><b>${fmtPrice(pos.avg)}</b></div>
         <div class="detail-box"><span>Costo residuo</span><b>${fmtEUR(positionCost(pos))}</b></div>
@@ -870,8 +1038,10 @@
       const res=await fetch(url,{headers:{accept:'application/json'},cache:'no-store'}); if(!res.ok) throw new Error('HTTP '+res.status);
       const data=await res.json(); drawChart(box,(data.prices||[]).map(x=>num(x[1])));
     }catch(_){
-      const fallback=(market[a.id]?.sparkline_in_7d?.price||[]).filter(Number.isFinite);
-      if(fallback.length>1 && range==='7d') drawChart(box,fallback); else box.innerHTML='<div class="chart-empty">Trend non disponibile in questo momento. I dati principali restano utilizzabili.</div>';
+      const m=market[a.id]||state.marketCache?.data?.[a.id]||{};
+      const fallback=trendValuesFor(a.id,m,range);
+      if(fallback.values.length>1) drawChart(box,fallback.values);
+      else box.innerHTML='<div class="chart-empty">Trend in costruzione: i dati principali restano utilizzabili.</div>';
     }
   }
   function drawChart(box,values){
@@ -1119,8 +1289,8 @@
     try{ const data=JSON.parse(await file.text()); if(!data?.state?.ops||!Array.isArray(data.state.ops)) throw new Error('Formato non valido'); checkpointState('Prima di importare backup'); state={...defaultState(),...data.state,opportunity:{...defaultState().opportunity,...(data.state.opportunity||{})}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll();refreshMarket(true);toast('Backup importato'); }catch(_){toast('Backup non valido');}
   }
   function resetState(){
-    if(!confirm('Ripristinare i dati iniziali RC4.3? Le operazioni e note manuali verranno eliminate.')) return;
-    checkpointState('Prima del ripristino RC4'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC4.3 ripristinata');
+    if(!confirm('Ripristinare i dati iniziali RC5? Le operazioni e note manuali verranno eliminate.')) return;
+    checkpointState('Prima del ripristino RC4'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC5 ripristinata');
   }
 
   function wantedIds(){
@@ -1155,7 +1325,7 @@
       state.opportunity={...opp,time:now,candidates,prev:nextPrev,trending:[],trendingAt:now,signals:state.opportunity.signals||[]};
       recordOpportunitySignals(candidates);
       candidates.forEach(c=>market[c.id]={...market[c.id],...c});
-      saveState(); renderAll();
+      recordDecisionTracking(); saveState(); renderAll();
       toast(candidates.length?`Radar aggiornato: ${candidates.length} opportunità`:'Radar: nessun segnale pulito al momento');
       return true;
     }catch(err){
@@ -1202,7 +1372,7 @@
       updateSignalOutcomes(rows);
       state.marketCache={time:Date.now(),data};
       marketSource='CoinPaprika';
-      saveState(); setDataStatus('live'); renderAll(); return true;
+      recordDecisionTracking(); saveState(); setDataStatus('live'); renderAll(); return true;
     }catch(paprikaErr){
       // Seconda fonte: CoinGecko. Se il browser la blocca, l'app resta comunque sulla cache.
       try{
@@ -1210,7 +1380,7 @@
         const url=`https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&ids=${encodeURIComponent(ids.join(','))}&order=market_cap_desc&sparkline=true&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full`;
         const res=await cgFetch(url); const arr=await res.json();
         const data={...market}; arr.forEach(x=>data[x.id]=x);
-        market=data; updateSignalOutcomes(arr); state.marketCache={time:Date.now(),data}; marketSource='CoinGecko'; saveState(); setDataStatus('live'); renderAll(); return true;
+        market=data; updateSignalOutcomes(arr); state.marketCache={time:Date.now(),data}; marketSource='CoinGecko'; recordDecisionTracking(); saveState(); setDataStatus('live'); renderAll(); return true;
       }catch(_){
         market={...BASELINE.seedMarket,...(state.marketCache?.data||{})};
         (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c});
@@ -1233,6 +1403,7 @@
   }
 
   function init(){
+    recordDecisionTracking();
     renderAll(); showView(state.ui.lastView||'home');
     $$('.nav-btn[data-view]').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));
     $('.nav-main').addEventListener('click',()=>openOpSheet());

@@ -52,3 +52,26 @@ button,input,select,textarea{font:inherit}.app-shell{max-width:760px;margin:0 au
 
 /* RC4.3.2 - stato dati stale */
 .radar-stale-warning{margin:10px 0 14px;padding:13px 15px;border:1px solid rgba(251,191,36,.35);border-radius:18px;background:rgba(251,191,36,.08);color:#d9e2f2;line-height:1.45}.radar-stale-warning b{color:#f7c96b}
+
+/* RC5 · supporto decisionale */
+.asset-peak{font-size:10.5px;color:#9eacc3;margin-top:6px;font-weight:750}
+.trend-caption{font-size:10.5px;color:#8f9db5;margin-top:5px;line-height:1.35}
+.decision-checks{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.decision-check{display:inline-flex;align-items:center;gap:4px;border:1px solid #2a3b58;background:#0e192b;color:#aab7cc;border-radius:999px;padding:6px 8px;font-size:9.5px;font-weight:850;line-height:1}
+.decision-check.good{color:#83e8b5;border-color:rgba(109,224,164,.24);background:rgba(109,224,164,.07)}
+.decision-check.bad{color:#ff9bad;border-color:rgba(255,112,136,.24);background:rgba(255,112,136,.07)}
+.decision-check.neutral{color:#c0cbe0}
+.decision-panel{border:1px solid #293a59;background:linear-gradient(160deg,#111e33,#0c1729);border-radius:18px;padding:13px}
+.decision-panel.ready{border-color:rgba(109,224,164,.28)}
+.decision-panel.prepare,.decision-panel.warn{border-color:rgba(255,202,107,.28)}
+.decision-panel.stop{border-color:rgba(255,112,136,.30)}
+.decision-title{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.decision-title b{font-size:13px;color:#f0f5ff}
+.decision-panel p{margin:10px 0 0;color:#d0daea;font-size:12.5px;line-height:1.55}
+.decision-panel small{display:block;margin-top:10px;color:#8f9db5;font-size:10.5px;line-height:1.45}
+.decision-peak{display:grid;grid-template-columns:1fr auto;gap:7px 12px;margin-top:10px;padding:10px;border-radius:14px;background:rgba(7,16,31,.45);border:1px solid rgba(124,149,192,.1)}
+.decision-peak span{font-size:10.5px;color:#94a3bc}.decision-peak b{font-size:12px;color:#edf4ff}
+@media(max-width:520px){.decision-check{font-size:9px;padding:5px 7px}.asset-peak{font-size:10px}.trend-caption{font-size:10px}}
+.asset-card{min-height:194px}
+.asset-card .status-pill{max-width:126px;white-space:normal;text-align:center;justify-content:center;line-height:1.15}
+@media(max-width:520px){.asset-card{min-height:188px}.asset-card .status-pill{max-width:116px;font-size:9.5px;padding:6px 8px}}

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.5.0';
+  const VERSION = '2.6.0';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 4 * 60 * 1000;
   const AUTO_REFRESH_MS = 5 * 60 * 1000;
@@ -88,6 +88,8 @@
     marketCache: {time:0,data:{...BASELINE.seedMarket}},
     opportunity: {time:0,candidates:[],prev:{},signals:[],trending:[]},
     decision: {peaks:{},samples:{}},
+    challenge: null,
+    challengeArchives: [],
     ui: {lastView:'home'}
   });
 
@@ -244,6 +246,8 @@
       if(!Array.isArray(merged.opportunity.candidates)) merged.opportunity.candidates=[];
       if(!Array.isArray(merged.opportunity.signals)) merged.opportunity.signals=[];
       if(!merged.opportunity.prev || typeof merged.opportunity.prev!=='object') merged.opportunity.prev={};
+      if(!Array.isArray(merged.challengeArchives)) merged.challengeArchives=[];
+      if(merged.challenge && typeof merged.challenge!=='object') merged.challenge=null;
       return merged;
     }catch(_){ return defaultState(); }
   }
@@ -268,12 +272,32 @@
   function watchAssets(){ return (state.watchlistIds||[]).map(assetById).filter(Boolean); }
   function isWatched(a){ return !!a && (state.watchlistIds||[]).includes(a.id); }
 
+  function activeBaseline(){
+    const c=state?.challenge;
+    if(c?.active && c.baseline){
+      return {
+        positions:(c.baseline.positions||[]).map(p=>({...p})),
+        cash:{base:num(c.baseline.cash?.base),test:num(c.baseline.cash?.test)},
+        ownDeposits:num(c.baseline.ownDeposits),
+        rewardDeposits:num(c.baseline.rewardDeposits),
+        withdrawals:num(c.baseline.withdrawals)
+      };
+    }
+    return {
+      positions:BASELINE.positions.map(p=>({...p})), cash:{...BASELINE.cash},
+      ownDeposits:BASELINE.ownDeposits, rewardDeposits:BASELINE.rewardDeposits, withdrawals:BASELINE.withdrawals
+    };
+  }
+  function activeChallengeName(){ return state.challenge?.active ? state.challenge.name : 'Challenge precedente'; }
+  function challengeInitialCapital(snapshot){ return state.challenge?.active ? num(state.challenge.initialCapital) : num(snapshot?.ownDeposits)+num(snapshot?.rewardDeposits); }
+
   function replay(){
-    const positions = BASELINE.positions.map(p=>({...p}));
-    const cash = {...BASELINE.cash};
-    let ownDeposits = BASELINE.ownDeposits;
-    let rewardDeposits = BASELINE.rewardDeposits;
-    let withdrawals = BASELINE.withdrawals;
+    const baseline=activeBaseline();
+    const positions = baseline.positions.map(p=>({...p}));
+    const cash = {...baseline.cash};
+    let ownDeposits = baseline.ownDeposits;
+    let rewardDeposits = baseline.rewardDeposits;
+    let withdrawals = baseline.withdrawals;
     const realized = {};
     const realizedByKey = {};
     const soldCost = {};
@@ -714,34 +738,34 @@
     const btc=market.bitcoin||BASELINE.seedMarket.bitcoin;
     const rs=radarStatus(btc);
     const pnlClass=s.result>=0?'good':'bad';
+    const initial=challengeInitialCapital(s);
+    const pct=initial?s.result/initial*100:0;
+    const liquid=num(s.cash.base)+num(s.cash.test);
+    const posSummary=[...s.positions].sort((a,b)=>s.totalPctFor(b)-s.totalPctFor(a));
+    const challengeBanner=!state.challenge?.active?`<div class="challenge-banner"><div><b>Nuova Challenge 150 pronta</b><span>Archivia la situazione attuale e riparti da 150 € senza perdere lo storico.</span></div><button class="chip-btn" data-action="new-challenge">Avvia Challenge 150</button></div>`:'';
+    const positionPL=posSummary.length?`<div class="pl-overview"><div class="pl-overview-head"><b>P/L posizioni</b><span>risultato di ogni posizione aperta</span></div><div class="pl-mini-grid">${posSummary.map(p=>{const pl=s.totalPnlFor(p),pp=s.totalPctFor(p);return `<div class="pl-mini"><span>${esc(p.symbol)}</span><b class="${cls(pl)}">${fmtEUR(pl)}</b><small class="${cls(pp)}">${fmtPct(pp)}</small></div>`;}).join('')}</div></div>`:'';
+    const testBlock=(s.testPos.length||s.cash.test>0.005)?`<div class="section-title compact-section"><div><h2>Fondo Test</h2><p>Separato dal portafoglio principale</p></div></div><div class="cash-card compact-cash"><div class="cash-row"><div><div class="cash-title">⚡ Fondo Test</div><div class="muted small">liquidità e posizioni sperimentali</div></div><div class="cash-value">${fmtEUR(s.testValue)}</div></div><div class="cash-details"><div class="cash-mini"><span>Liquidità</span><b>${fmtEUR(s.cash.test)}</b></div><div class="cash-mini"><span>Posizioni</span><b>${s.testPos.length}</b></div></div>${s.testPos.length?`<div class="portfolio-grid" style="margin-top:12px">${s.testPos.map(assetCard).join('')}</div>`:''}</div>`:'';
     $('#view-home').innerHTML=`
-      <div class="summary-grid">
-        <div class="summary-card"><div class="label">Capitale tuo</div><div class="big">${fmtEUR(s.ownDeposits)}</div><div class="sub">versamenti personali netti</div></div>
-        <div class="summary-card"><div class="label">Reward / bonus</div><div class="big">${fmtEUR(s.rewardDeposits)}</div><div class="sub">separati dal capitale tuo</div></div>
-        <div class="summary-card"><div class="label">Valore totale</div><div class="big">${fmtEUR(s.total)}</div><div class="sub">Base + Fondo Test + liquidità</div></div>
-        <div class="summary-card ${pnlClass}"><div class="label">Risultato reale</div><div class="big">${fmtEUR(s.result)}</div><div class="sub">${fmtPct((s.ownDeposits+s.rewardDeposits)?s.result/(s.ownDeposits+s.rewardDeposits)*100:0)} sul capitale entrato</div></div>
+      ${challengeBanner}
+      <div class="summary-grid compact-summary">
+        <div class="summary-card"><div class="label">Capitale iniziale</div><div class="big">${fmtEUR(initial)}</div><div class="sub">${state.challenge?.active?esc(activeChallengeName())+' · ':''}liquidità ${fmtEUR(liquid)}</div></div>
+        <div class="summary-card ${pnlClass}"><div class="label">Risultato reale</div><div class="big">${fmtEUR(s.result)}</div><div class="sub">${fmtPct(pct)} · valore attuale ${fmtEUR(s.total)}</div></div>
       </div>
 
-      <div class="market-hero" data-open-asset="BTC">
-        <div class="market-hero-top"><div><div class="eyebrow">RADAR MERCATO · BTC</div><h3>Termometro generale</h3></div><div class="market-price">${fmtPrice(num(btc.current_price))}</div></div>
-        <div style="margin-top:9px"><span class="status-pill ${rs.tone}">${rs.label}</span></div>
+      ${positionPL}
+
+      <div class="market-hero home-btc" data-open-asset="BTC">
+        <div class="market-hero-top"><div><div class="eyebrow">TERMOMETRO BTC</div><h3>Mercato generale</h3></div><div><div class="market-price">${fmtPrice(num(btc.current_price))}</div><div class="btc-pill-wrap"><span class="status-pill ${rs.tone}">${rs.label}</span></div></div></div>
         <div class="market-strip">
           <div class="metric"><span>1h</span><b class="${cls(num(btc.price_change_percentage_1h_in_currency))}">${fmtPct(btc.price_change_percentage_1h_in_currency)}</b></div>
           <div class="metric"><span>24h</span><b class="${cls(num(btc.price_change_percentage_24h_in_currency))}">${fmtPct(btc.price_change_percentage_24h_in_currency)}</b></div>
           <div class="metric"><span>7g</span><b class="${cls(num(btc.price_change_percentage_7d_in_currency))}">${fmtPct(btc.price_change_percentage_7d_in_currency)}</b></div>
         </div>
-        <div class="hero-reason">${radarReason(btc,false)} Tocca per aprire il dettaglio.</div>
       </div>
 
-      <div class="section-title"><div><h2>Portafoglio Base</h2><p>${fmtEUR(s.baseValue)} · ${s.basePos.length} posizioni${s.cash.base?` · liquidità ${fmtEUR(s.cash.base)}`:''} · ordinate per P/L totale %</p></div></div>
-      <div class="portfolio-grid">${s.basePos.map(assetCard).join('')}</div>
-
-      <div class="section-title"><div><h2>Fondo Test</h2><p>Separato dal portafoglio Base</p></div><div class="right"><span class="status-pill good">PRONTO</span></div></div>
-      <div class="cash-card">
-        <div class="cash-row"><div><div class="cash-title">⚡ Fondo Test</div><div class="muted small">operazioni sperimentali registrate a parte</div></div><div class="cash-value">${fmtEUR(s.testValue)}</div></div>
-        <div class="cash-details"><div class="cash-mini"><span>Liquidità</span><b>${fmtEUR(s.cash.test)}</b></div><div class="cash-mini"><span>Posizioni aperte</span><b>${s.testPos.length}</b></div></div>
-        ${s.testPos.length?`<div class="portfolio-grid" style="margin-top:12px">${s.testPos.map(assetCard).join('')}</div>`:''}
-      </div>
+      <div class="section-title portfolio-title"><div><h2>Portafoglio</h2><p>${fmtEUR(s.baseValue)} · ${s.basePos.length} posizioni · liquidità ${fmtEUR(s.cash.base)} · ordinate per P/L totale %</p></div></div>
+      <div class="portfolio-grid">${s.basePos.length?s.basePos.map(assetCard).join(''):'<div class="empty portfolio-empty">Nessuna posizione ancora. Registra il primo acquisto con ＋ Operazione.</div>'}</div>
+      ${testBlock}
     `;
   }
 
@@ -758,7 +782,7 @@
       <div class="asset-pnl ${cls(pnl)}">Latente ${fmtEUR(pnl)} · ${fmtPct(pct)}</div>
       ${soldCost>0?`<div class="asset-total ${cls(totalPnl)}">Totale asset ${fmtEUR(totalPnl)} · ${fmtPct(totalPct)}</div>`:''}
       <div class="asset-meta">24h <span class="${cls(num(day))}">${fmtPct(day)}</span> · prezzo ${fmtPrice(currentPrice(p))}</div>
-      <div class="asset-peak">Max RC5 ${fmtPct(dec.peakPct)} · dal max −${dec.pullback.toFixed(1)} pt</div>
+      <div class="asset-peak">Max challenge ${fmtPct(dec.peakPct)} · dal max −${dec.pullback.toFixed(1)} pt</div>
       <div class="spark">${sparkSVG(trend.values)}</div>
       <div class="tag">tocca per dettagli</div>
     </article>`;
@@ -883,8 +907,8 @@
     ['NON INSEGUIRE','Segnala un movimento già molto esteso. Non significa che la crypto debba scendere: ricorda semplicemente di non confondere una forte corsa già avvenuta con un segnale iniziale.'],
     ['Cosa sarebbe successo?','La card resta compatta e si apre al tocco: mostra in parole semplici perché il segnale è nato, i dati tecnici e il confronto dopo 24h e 48h.'],
     ['Semaforo posizione','MANTIENI, IN PROFITTO, CONTROLLA PROFITTO, VALUTA PRESA PROFITTO e ATTENZIONE combinano P/L, trend, forza vs BTC e distanza dal massimo. Non sono ordini automatici.'],
-    ['Massimo registrato','RC5 memorizza il miglior P/L visto da quando la funzione è attiva. Se il profitto arretra dal massimo mentre momentum e forza peggiorano, il semaforo diventa più prudente.'],
-    ['Trend nel Radar','Quando la fonte non offre una serie completa, RC5 mostra una direzione sintetica costruita dai dati reali 7g, 24h e 1h. Con l’uso, l’app accumula anche campioni propri e il grafico diventa più dettagliato.']
+    ['Massimo registrato','L’app memorizza il miglior P/L visto durante la challenge attiva. Se il profitto arretra dal massimo mentre momentum e forza peggiorano, il semaforo diventa più prudente.'],
+    ['Trend nel Radar','Quando la fonte non offre una serie completa, l’app mostra una direzione sintetica costruita dai dati reali 7g, 24h e 1h. Con l’uso accumula anche campioni propri e il grafico diventa più dettagliato.']
   ];
   function renderSchool(){
     $('#view-school').innerHTML=`
@@ -893,23 +917,34 @@
     `;
   }
 
+  function challengeArchiveCard(a){
+    const pos=(a.positions||[]);
+    return `<details class="challenge-archive-card"><summary><div><b>${esc(a.name||'Challenge archiviata')}</b><span>${fmtDate(a.closedAt)}</span></div><div class="${cls(num(a.resultAtClose))}">${fmtEUR(num(a.resultAtClose))}</div></summary><div class="challenge-archive-body"><div class="cash-details"><div class="cash-mini"><span>Capitale entrato</span><b>${fmtEUR(num(a.capitalEntered))}</b></div><div class="cash-mini"><span>Valore alla chiusura</span><b>${fmtEUR(num(a.totalAtClose))}</b></div></div>${pos.length?`<div class="archive-position-list">${pos.map(p=>`<div><span>${esc(p.symbol)}</span><b class="${cls(num(p.totalPnl))}">${fmtEUR(num(p.totalPnl))}</b><small>${fmtPct(num(p.totalPct))}</small></div>`).join('')}</div>`:'<div class="muted small" style="margin-top:10px">Nessuna posizione aperta alla chiusura.</div>'}<div class="muted small" style="margin-top:10px">Archivio in sola lettura · ${a.opsCount||0} operazioni registrate.</div></div></details>`;
+  }
+
   function renderDiary(){
     const s=portfolioSnapshot();
     const notes=[...state.notes].sort((a,b)=>new Date(b.date)-new Date(a.date));
     const realizedEntries=Object.entries(s.realized).filter(([,v])=>Math.abs(v)>0.0001);
     const saleEvents=[...(s.sales||[])].sort((a,b)=>new Date(b.date)-new Date(a.date));
+    const archives=[...(state.challengeArchives||[])].sort((a,b)=>new Date(b.closedAt)-new Date(a.closedAt));
+    const currentChallenge=state.challenge?.active?`<div class="challenge-current-card"><div><div class="eyebrow">CHALLENGE ATTIVA</div><h3>${esc(state.challenge.name)}</h3><p>dal ${fmtDate(state.challenge.startedAt)} · capitale iniziale ${fmtEUR(num(state.challenge.initialCapital))}</p></div><div class="challenge-current-result"><span>Risultato</span><b class="${cls(s.result)}">${fmtEUR(s.result)}</b></div><button class="chip-btn" data-action="new-challenge">Nuova challenge</button></div>`:`<div class="challenge-current-card legacy"><div><div class="eyebrow">PASSAGGIO CHALLENGE</div><h3>Pronto per Challenge 150</h3><p>Archivia la situazione attuale e riparti con contabilità pulita.</p></div><button class="primary-btn" data-action="new-challenge">Avvia Challenge 150</button></div>`;
     $('#view-diary').innerHTML=`
+      <div class="section-title"><div><h2>Challenge</h2><p>La challenge attiva resta separata dallo storico precedente</p></div></div>
+      ${currentChallenge}
+      ${archives.length?`<div class="section-title compact-section"><div><h2>Archivio challenge</h2><p>Snapshot congelati, non influenzano i conti attuali</p></div></div><div class="challenge-archive-list">${archives.map(challengeArchiveCard).join('')}</div>`:''}
+
       <div class="section-title"><div><h2>Diario</h2><p>Note, vendite, operazioni e backup dei dati</p></div><div class="right"><button class="chip-btn" data-action="manage-ops">Gestisci operazioni</button><button class="chip-btn" data-action="new-note">＋ Nota</button></div></div>
       <div class="note-list">${notes.length?notes.map(n=>`<article class="note-card"><div class="note-top"><div><div class="op-title">${esc(n.symbol||'Generale')}</div><div class="note-sub">${fmtDate(n.date)}</div></div><button class="watch-remove" data-delete-note="${esc(n.id)}">elimina</button></div><div class="radar-reason">${esc(n.text)}</div></article>`).join(''):'<div class="empty">Nessuna nota ancora. Puoi usarle per ricordare il motivo di una scelta o cosa vuoi controllare.</div>'}</div>
 
       <div class="section-title"><div><h2>Vendite registrate</h2><p>Incasso, costo ceduto e profitto reale separati</p></div></div>
-      <div class="closed-list">${saleEvents.length?saleEvents.map(saleLedgerCard).join(''):'<div class="empty">Nessuna vendita registrata dopo lo snapshot iniziale.</div>'}</div>
+      <div class="closed-list">${saleEvents.length?saleEvents.map(saleLedgerCard).join(''):'<div class="empty">Nessuna vendita registrata nella challenge attiva.</div>'}</div>
 
-      <div class="section-title"><div><h2>Risultati realizzati</h2><p>Solo profitto/perdita già cristallizzato dalle vendite, non l’intero incasso</p></div></div>
-      <div class="closed-list">${realizedEntries.length?realizedEntries.map(([sym,v])=>`<article class="closed-card"><div class="closed-top"><div><div class="closed-title">${esc(sym)}</div><div class="closed-sub">P/L realizzato cumulato</div></div><div class="${cls(v)}" style="font-size:18px;font-weight:900">${fmtEUR(v)}</div></div></article>`).join(''):'<div class="empty">Nessun profitto o perdita realizzato registrato dalla RC1.</div>'}</div>
+      <div class="section-title"><div><h2>Risultati realizzati</h2><p>Solo profitto/perdita cristallizzato nella challenge attiva</p></div></div>
+      <div class="closed-list">${realizedEntries.length?realizedEntries.map(([sym,v])=>`<article class="closed-card"><div class="closed-top"><div><div class="closed-title">${esc(sym)}</div><div class="closed-sub">P/L realizzato cumulato</div></div><div class="${cls(v)}" style="font-size:18px;font-weight:900">${fmtEUR(v)}</div></div></article>`).join(''):'<div class="empty">Nessun profitto o perdita realizzato nella challenge attiva.</div>'}</div>
 
-      <div class="settings-card"><h3>Backup e sicurezza dati</h3><p class="muted small">I dati manuali restano sul dispositivo. RC4.2 mantiene anche un punto sicurezza locale prima delle modifiche importanti.</p><div class="settings-actions"><button class="chip-btn" data-action="export">Esporta backup</button><button class="chip-btn" data-action="restore">Importa backup</button><button class="chip-btn" data-action="restore-safety">Ripristina ultimo punto</button><button class="danger-btn" data-action="reset">Ripristina RC4.2</button></div></div>
-      <div class="settings-card"><h3>Contabilità</h3><div class="cash-details"><div class="cash-mini"><span>Capitale personale</span><b>${fmtEUR(s.ownDeposits)}</b></div><div class="cash-mini"><span>Reward accumulati</span><b>${fmtEUR(s.rewardDeposits)}</b></div><div class="cash-mini"><span>Prelievi registrati</span><b>${fmtEUR(s.withdrawals)}</b></div><div class="cash-mini"><span>Risultato reale</span><b class="${cls(s.result)}">${fmtEUR(s.result)}</b></div></div></div>
+      <div class="settings-card"><h3>Backup e sicurezza dati</h3><p class="muted small">Prima di una nuova challenge viene creato anche un punto sicurezza locale. L’archivio challenge resta nel backup JSON.</p><div class="settings-actions"><button class="chip-btn" data-action="export">Esporta backup</button><button class="chip-btn" data-action="restore">Importa backup</button><button class="chip-btn" data-action="restore-safety">Ripristina ultimo punto</button></div></div>
+      <div class="settings-card"><h3>Contabilità challenge</h3><div class="cash-details"><div class="cash-mini"><span>Capitale iniziale</span><b>${fmtEUR(challengeInitialCapital(s))}</b></div><div class="cash-mini"><span>Liquidità attuale</span><b>${fmtEUR(num(s.cash.base)+num(s.cash.test))}</b></div><div class="cash-mini"><span>Valore totale</span><b>${fmtEUR(s.total)}</b></div><div class="cash-mini"><span>Risultato reale</span><b class="${cls(s.result)}">${fmtEUR(s.result)}</b></div></div></div>
     `;
   }
 
@@ -939,6 +974,7 @@
     $$('[data-action="export"]').forEach(b=>b.addEventListener('click',exportBackup));
     $$('[data-action="restore"]').forEach(b=>b.addEventListener('click',()=>$('#restoreInput').click()));
     $$('[data-action="restore-safety"]').forEach(b=>b.addEventListener('click',restoreCheckpoint));
+    $$('[data-action="new-challenge"]').forEach(b=>b.addEventListener('click',openChallengeSheet));
     $$('[data-action="reset"]').forEach(b=>b.addEventListener('click',resetState));
   }
 
@@ -998,7 +1034,7 @@
       ${owned?`<div class="sheet-section"><div class="eyebrow">GUIDA POSIZIONE</div><div class="decision-panel ${st.tone}">
         <div class="decision-title"><span class="status-pill ${st.tone}">${esc(st.label)}</span><b>Supporto decisionale</b></div>
         <p>${esc(st.reason)}</p>
-        <div class="decision-peak"><span>Massimo P/L registrato da RC5</span><b>${fmtPct(st.peakPct)}</b><span>Ritracciamento dal massimo</span><b>−${st.pullback.toFixed(1)} pt</b></div>
+        <div class="decision-peak"><span>Massimo P/L della challenge</span><b>${fmtPct(st.peakPct)}</b><span>Ritracciamento dal massimo</span><b>−${st.pullback.toFixed(1)} pt</b></div>
         ${decisionChecksHTML(st.checks)}
         <small>È una lettura dei dati, non un ordine di vendita. La decisione finale resta tua.</small>
       </div></div><div class="sheet-section"><div class="eyebrow">LA TUA POSIZIONE</div><div class="detail-grid">
@@ -1155,7 +1191,7 @@
     }else{
       $('#opToAccount').disabled=false;
     }
-    $('#opHint').textContent=type==='SELL'?`Inserisci il lordo della vendita e la commissione separatamente: l’app calcola il netto, il costo di carico ceduto e il profitto realmente realizzato.`:assetMode?`Liquidità ${acct==='base'?'Base':'Test'} disponibile: ${fmtEUR(cash)}. Per un acquisto con nuovi soldi registra prima un versamento.`:transfer?`Scegli solo il conto di partenza e l’importo. La destinazione è automatica: ${acct==='base'?'Fondo Test':'Portafoglio Base'}. Nessuna crypto viene selezionata o spostata.`:'Questa operazione aggiorna la contabilità del capitale senza modificare direttamente le posizioni.';
+    $('#opHint').textContent=type==='SELL'?`Inserisci il lordo della vendita e la commissione separatamente: l’app calcola il netto, il costo di carico ceduto e il profitto realmente realizzato.`:type==='BUY'?`Liquidità ${acct==='base'?'Base':'Test'} disponibile: ${fmtEUR(cash)}. Se Revolut mostra la commissione in crypto, inserisci la quantità NETTA ricevuta e lascia Commissione (€) a 0.`:transfer?`Scegli solo il conto di partenza e l’importo. La destinazione è automatica: ${acct==='base'?'Fondo Test':'Portafoglio Base'}. Nessuna crypto viene selezionata o spostata.`:'Questa operazione aggiorna la contabilità del capitale senza modificare direttamente le posizioni.';
     updateSalePreview();
   }
 
@@ -1281,6 +1317,45 @@
     checkpointState('Prima di nuova nota'); state.notes.push({id:`note-${Date.now()}`,symbol:$('#noteAsset').value,date:$('#noteDate').value,text}); saveState();closeSheets();renderDiary();bindDynamic();toast('Nota salvata');
   }
 
+  function openChallengeSheet(){
+    const sh=$('#challengeSheet');
+    $('#challengeName').value=state.challenge?.active?'Nuova challenge':'Challenge 150';
+    $('#challengeCapital').value=state.challenge?.active?String(num(state.challenge.initialCapital)||150):'150';
+    $('#challengeDate').value=NOW_ISO_LOCAL();
+    openBackdrop(sh);
+  }
+
+  function saveChallenge(e){
+    e.preventDefault();
+    const name=$('#challengeName').value.trim()||'Nuova challenge';
+    const capital=num($('#challengeCapital').value);
+    const startedAt=$('#challengeDate').value||NOW_ISO_LOCAL();
+    if(capital<=0){toast('Inserisci un capitale iniziale valido');return;}
+    if(!confirm(`Archiviare la situazione attuale e avviare “${name}” con ${fmtEUR(capital)}?`)) return;
+    checkpointState('Prima di nuova challenge');
+    const snap=portfolioSnapshot();
+    const oldName=state.challenge?.active?state.challenge.name:'Challenge precedente';
+    const oldStarted=state.challenge?.active?state.challenge.startedAt:BASELINE.snapshotAt;
+    const archive={
+      id:`archive-${Date.now()}`,name:oldName,startedAt:oldStarted,closedAt:startedAt,
+      capitalEntered:num(snap.ownDeposits)+num(snap.rewardDeposits),totalAtClose:num(snap.total),resultAtClose:num(snap.result),
+      positions:snap.positions.map(p=>({symbol:p.symbol,name:p.name,account:p.account,qty:p.qty,avg:p.avg,value:positionValue(p),totalPnl:snap.totalPnlFor(p),totalPct:snap.totalPctFor(p)})),
+      realized:{...snap.realized},opsCount:(state.ops||[]).length,ops:(state.ops||[]).map(o=>({...o})),notes:(state.notes||[]).map(n=>({...n}))
+    };
+    state.challengeArchives=[...(state.challengeArchives||[]),archive].slice(-20);
+    state.challenge={id:`challenge-${Date.now()}`,name,startedAt,initialCapital:capital,active:true,baseline:{ownDeposits:capital,rewardDeposits:0,withdrawals:0,cash:{base:capital,test:0},positions:[]}};
+    state.ops=[];
+    state.notes=[];
+    state.decision={peaks:{},samples:{}};
+    state.ui={...(state.ui||{}),lastView:'home'};
+    saveState();
+    closeSheets();
+    renderAll();
+    showView('home');
+    recordDecisionTracking();
+    toast(`${name} avviata: ${fmtEUR(capital)} disponibili`);
+  }
+
   function exportBackup(){
     const payload={app:'Crypto Conte',version:VERSION,exportedAt:new Date().toISOString(),state};
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob); const a=document.createElement('a');a.href=url;a.download=`crypto-conte-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -1289,8 +1364,8 @@
     try{ const data=JSON.parse(await file.text()); if(!data?.state?.ops||!Array.isArray(data.state.ops)) throw new Error('Formato non valido'); checkpointState('Prima di importare backup'); state={...defaultState(),...data.state,opportunity:{...defaultState().opportunity,...(data.state.opportunity||{})}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll();refreshMarket(true);toast('Backup importato'); }catch(_){toast('Backup non valido');}
   }
   function resetState(){
-    if(!confirm('Ripristinare i dati iniziali RC5? Le operazioni e note manuali verranno eliminate.')) return;
-    checkpointState('Prima del ripristino RC4'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('RC5 ripristinata');
+    if(!confirm('Ripristinare la vecchia configurazione iniziale? Usa invece Nuova challenge se vuoi ripartire senza perdere lo storico.')) return;
+    checkpointState('Prima del ripristino RC4'); state=defaultState(); saveState();market={...BASELINE.seedMarket};renderAll();refreshMarket(true);toast('Configurazione iniziale ripristinata');
   }
 
   function wantedIds(){
@@ -1409,7 +1484,7 @@
     $('.nav-main').addEventListener('click',()=>openOpSheet());
     $('#refreshBtn').addEventListener('click',async()=>{apiBackoffUntil=0;const ok=await refreshMarket(true);if(ok)setTimeout(()=>scanOpportunities(false),8000);});
     $('#sheetBackdrop').addEventListener('click',closeSheets); $$('[data-close-sheet]').forEach(b=>b.addEventListener('click',closeSheets));
-    $('#opType').addEventListener('change',updateOpFields); $('#opAccount').addEventListener('change',updateOpFields); $('#opAsset').addEventListener('change',updateOpFields); $('#opQty').addEventListener('input',updateSalePreview); $('#opAmount').addEventListener('input',updateSalePreview); $('#opFee').addEventListener('input',updateSalePreview); $('#opForm').addEventListener('submit',saveOperation); $('#noteForm').addEventListener('submit',saveNote);
+    $('#opType').addEventListener('change',updateOpFields); $('#opAccount').addEventListener('change',updateOpFields); $('#opAsset').addEventListener('change',updateOpFields); $('#opQty').addEventListener('input',updateSalePreview); $('#opAmount').addEventListener('input',updateSalePreview); $('#opFee').addEventListener('input',updateSalePreview); $('#opForm').addEventListener('submit',saveOperation); $('#noteForm').addEventListener('submit',saveNote); $('#challengeForm').addEventListener('submit',saveChallenge);
     $('#watchSearch').addEventListener('input',e=>{clearTimeout(watchSearchTimer);const q=e.target.value;watchSearchTimer=setTimeout(()=>searchWatch(q),350);});
     $('#restoreInput').addEventListener('change',e=>{const f=e.target.files?.[0];if(f)restoreBackup(f);e.target.value='';});
     document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){if(Date.now()-num(state.marketCache?.time)>45000)refreshMarket(true);setTimeout(()=>scanOpportunities(false),9000);}});

@@ -9,14 +9,14 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
-  <link rel="stylesheet" href="style.css?v=2.5.0">
+  <link rel="stylesheet" href="style.css?v=2.6.0">
   <title>Crypto Conte</title>
 </head>
 <body>
   <div id="app" class="app-shell">
     <header class="topbar">
       <div>
-        <div class="eyebrow">SALA CONTROLLO · RC5</div>
+        <div class="eyebrow">SALA CONTROLLO · RC6</div>
         <h1>Crypto Conte</h1>
         <div id="dataStatus" class="data-status"><span class="dot"></span><span>caricamento dati…</span></div>
       </div>
@@ -152,10 +152,34 @@
     </form>
   </section>
 
+  <section id="challengeSheet" class="sheet" aria-modal="true" role="dialog" hidden>
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <div><div class="eyebrow">NUOVA CHALLENGE</div><h2>Riparti pulito</h2></div>
+      <button class="ghost-btn" data-close-sheet>Chiudi</button>
+    </div>
+    <form id="challengeForm" class="form-grid" autocomplete="off">
+      <label class="full">Nome challenge
+        <input id="challengeName" maxlength="40" value="Challenge 150" required>
+      </label>
+      <label>Capitale iniziale (€)
+        <input id="challengeCapital" type="number" min="1" step="0.01" inputmode="decimal" value="150" required>
+      </label>
+      <label>Data e ora inizio
+        <input id="challengeDate" type="datetime-local" required>
+      </label>
+      <div class="challenge-warning full">
+        <b>Niente viene cancellato.</b> La situazione attuale viene congelata nell’Archivio challenge.
+        La nuova challenge riparte con il capitale indicato come liquidità Base, senza posizioni, reward o vecchi risultati. Watchlist e Radar restano disponibili.
+      </div>
+      <button class="primary-btn full" type="submit">Archivia e avvia challenge</button>
+    </form>
+  </section>
+
   <div id="toast" class="toast" hidden></div>
 
   <input id="restoreInput" type="file" accept="application/json" hidden>
 
-  <script src="app.js?v=2.5.0"></script>
+  <script src="app.js?v=2.6.0"></script>
 </body>
 </html>

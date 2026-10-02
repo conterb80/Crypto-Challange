@@ -75,3 +75,27 @@ button,input,select,textarea{font:inherit}.app-shell{max-width:760px;margin:0 au
 .asset-card{min-height:194px}
 .asset-card .status-pill{max-width:126px;white-space:normal;text-align:center;justify-content:center;line-height:1.15}
 @media(max-width:520px){.asset-card{min-height:188px}.asset-card .status-pill{max-width:116px;font-size:9.5px;padding:6px 8px}}
+
+
+/* RC6 · Challenge 150 e Home compatta */
+.compact-summary .summary-card{min-height:104px;padding:15px 16px}
+.compact-summary .summary-card .big{font-size:27px;margin-top:8px}
+.compact-summary .summary-card .sub{margin-top:6px;font-size:11.5px}
+.home-btc{padding:14px 16px;margin-top:11px;border-radius:21px}
+.home-btc .market-price{font-size:22px;text-align:right}
+.home-btc .market-strip{margin-top:10px}
+.home-btc .metric{padding:8px 9px}
+.btc-pill-wrap{text-align:right;margin-top:5px}
+.portfolio-title{margin-top:18px}
+.compact-section{margin-top:18px}
+.compact-cash{padding:15px}
+.challenge-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 11px;padding:13px 14px;border:1px solid rgba(83,215,232,.22);border-radius:18px;background:linear-gradient(145deg,rgba(83,215,232,.08),rgba(99,164,255,.05))}
+.challenge-banner div{min-width:0}.challenge-banner b{display:block;font-size:13px;color:#f3f8ff}.challenge-banner span{display:block;margin-top:4px;color:#9facbf;font-size:10.5px;line-height:1.4}.challenge-banner button{flex:0 0 auto}
+.pl-overview{margin-top:11px;padding:12px 13px;border:1px solid rgba(126,151,191,.15);border-radius:18px;background:rgba(11,22,39,.72)}
+.pl-overview-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:9px}.pl-overview-head b{font-size:12px}.pl-overview-head span{font-size:9.5px;color:var(--muted)}
+.pl-mini-grid{display:flex;flex-wrap:wrap;gap:7px}.pl-mini{display:grid;grid-template-columns:auto auto;grid-template-areas:'sym eur' 'sym pct';align-items:center;gap:0 7px;min-width:104px;padding:8px 9px;border-radius:13px;background:rgba(5,14,27,.48);border:1px solid rgba(124,149,192,.09)}.pl-mini span{grid-area:sym;font-size:11px;font-weight:900;color:#dce6f5}.pl-mini b{grid-area:eur;font-size:11.5px;text-align:right}.pl-mini small{grid-area:pct;font-size:9px;text-align:right;font-weight:800}
+.portfolio-empty{grid-column:1/-1}
+.challenge-warning{padding:13px 14px;border-radius:17px;background:rgba(255,202,107,.07);border:1px solid rgba(255,202,107,.20);color:#c8d3e5;font-size:11.5px;line-height:1.55}.challenge-warning b{color:#ffe09b}
+.challenge-current-card{display:grid;grid-template-columns:1fr auto;gap:10px 14px;align-items:center;padding:15px;border:1px solid rgba(83,215,232,.18);border-radius:20px;background:linear-gradient(155deg,#12213a,#0d182a)}.challenge-current-card h3{margin:4px 0 0;font-size:20px}.challenge-current-card p{margin:5px 0 0;color:var(--muted);font-size:11px}.challenge-current-card>button{grid-column:1/-1;justify-self:start}.challenge-current-result{text-align:right}.challenge-current-result span{display:block;color:var(--muted);font-size:9px}.challenge-current-result b{display:block;margin-top:3px;font-size:18px}.challenge-current-card.legacy{grid-template-columns:1fr}.challenge-current-card.legacy>button{grid-column:auto}
+.challenge-archive-list{display:grid;gap:8px}.challenge-archive-card{border:1px solid var(--line);border-radius:18px;background:rgba(12,23,41,.75);overflow:hidden}.challenge-archive-card summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 14px;cursor:pointer}.challenge-archive-card summary::-webkit-details-marker{display:none}.challenge-archive-card summary b{font-size:12.5px}.challenge-archive-card summary span{display:block;color:var(--muted);font-size:9.5px;margin-top:3px}.challenge-archive-card summary>div:last-child{font-size:13px;font-weight:900}.challenge-archive-body{padding:0 14px 14px;border-top:1px solid rgba(126,151,191,.10)}.archive-position-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.archive-position-list>div{display:grid;grid-template-columns:auto auto;gap:2px 7px;padding:7px 8px;border-radius:11px;background:rgba(5,14,27,.42);border:1px solid rgba(124,149,192,.08)}.archive-position-list span{font-size:10px;font-weight:900}.archive-position-list b{font-size:10.5px}.archive-position-list small{grid-column:2;font-size:8.5px;text-align:right;color:var(--muted)}
+@media(max-width:520px){.compact-summary .summary-card{min-height:98px;padding:13px 14px}.compact-summary .summary-card .big{font-size:24px}.home-btc .market-price{font-size:20px}.pl-overview-head span{display:none}.pl-mini{min-width:96px;flex:1 1 29%}.challenge-banner{align-items:flex-start;flex-direction:column}.challenge-banner button{width:100%}.asset-card{min-height:180px}}

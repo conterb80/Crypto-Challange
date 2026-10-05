@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Crypto Conte",
   "short_name": "Crypto Conte",
-  "description": "Crypto Conte - Challenge 150: portafoglio, Radar, trading assistito automatico ogni 5 minuti e Training pratico.",
+  "description": "Crypto Conte - Challenge 150: portafoglio, Radar completo con Top 3 + candidati secondari, trading assistito automatico e Training pratico.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

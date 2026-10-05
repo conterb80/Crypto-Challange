@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.8.1';
+  const VERSION = '2.8.2';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 4 * 60 * 1000;
   const AUTO_REFRESH_MS = 5 * 60 * 1000;
@@ -86,7 +86,7 @@
     notes: [],
     customAssets: [],
     marketCache: {time:0,data:{...BASELINE.seedMarket}},
-    opportunity: {time:0,candidates:[],prev:{},signals:[],trending:[]},
+    opportunity: {time:0,candidates:[],secondary:[],prev:{},signals:[],trending:[],stats:{}},
     decision: {peaks:{},samples:{}},
     challenge: null,
     challengeArchives: [],
@@ -831,48 +831,106 @@
     </article>`;
   }
 
+  function allRadarCandidates(){
+    const opp=state.opportunity||defaultState().opportunity;
+    const rows=[...(opp.candidates||[]),...(opp.secondary||[])];
+    const seen=new Set();
+    return rows.filter(x=>x?.id&&!seen.has(x.id)&&(seen.add(x.id),true));
+  }
+
+  function radarCandidateCard(c,{tier='primary',index=0,stale=false}={}){
+    const dec=proposalDecision(c);
+    const shownStatus=stale?'DATI NON AGGIORNATI':dec.label;
+    const shownTone=stale?'observe':dec.tone;
+    const trend=trendValuesFor(c.id,c,'7d');
+    const subtitle=tier==='primary'?(index===0?'PROPOSTA PRINCIPALE':'TOP 3 RADAR'):'CANDIDATO SECONDARIO';
+    return `<article class="opportunity-card ${tier==='secondary'?'secondary-candidate':''}" data-open-asset="${esc(c.symbol)}">
+      <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${subtitle}</div></div><span class="status-pill ${shownTone}">${esc(shownStatus)}</span></div>
+      <div class="radar-grid">
+        <div class="metric"><span>Prezzo</span><b>${fmtPrice(num(c.current_price))}</b></div>
+        <div class="metric"><span>1h</span><b class="${cls(num(c.price_change_percentage_1h_in_currency))}">${fmtPct(c.price_change_percentage_1h_in_currency)}</b></div>
+        <div class="metric"><span>24h</span><b class="${cls(num(c.price_change_percentage_24h_in_currency))}">${fmtPct(c.price_change_percentage_24h_in_currency)}</b></div>
+        <div class="metric"><span>vs BTC 24h</span><b class="${cls(num(c.rel24))}">${fmtPct(c.rel24)}</b></div>
+      </div>
+      <div class="spark">${sparkSVG(trend.values)}</div>
+      <div class="trend-caption">${esc(trendCaption(c,trend.mode))}</div>
+      ${decisionChecksHTML(dec.checks)}
+      <div class="radar-reason"><b>Lettura:</b> ${esc(dec.reason)}<br><b>Perché il Radar l’ha trovata:</b> ${esc(c.reason)}</div>
+      <div class="opportunity-actions"><button data-watch-candidate="${esc(c.id)}">＋ Segui in Watchlist</button></div>
+    </article>`;
+  }
+
+  function radarLookupCard(c){
+    if(!c) return '';
+    const dec=proposalDecision(c);
+    const trend=trendValuesFor(c.id,c,'7d');
+    const inTop=(state.opportunity?.candidates||[]).some(x=>x.id===c.id);
+    const inSecondary=(state.opportunity?.secondary||[]).some(x=>x.id===c.id);
+    const tracked=(state.watchlistIds||[]).includes(c.id);
+    const owned=portfolioSnapshot().positions.some(p=>p.id===c.id||String(p.symbol).toUpperCase()===String(c.symbol).toUpperCase());
+    const where=owned?'GIÀ IN PORTAFOGLIO':tracked?'GIÀ IN WATCHLIST':inTop?'TOP 3 RADAR':inSecondary?'CANDIDATO SECONDARIO':'FUORI DALLA LISTA ATTUALE';
+    return `<article class="opportunity-card radar-lookup-card" data-open-asset="${esc(c.symbol)}">
+      <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${where}</div></div><span class="status-pill ${dec.tone}">${esc(dec.label)}</span></div>
+      <div class="radar-grid"><div class="metric"><span>Prezzo</span><b>${fmtPrice(num(c.current_price))}</b></div><div class="metric"><span>1h</span><b class="${cls(num(c.price_change_percentage_1h_in_currency))}">${fmtPct(c.price_change_percentage_1h_in_currency)}</b></div><div class="metric"><span>24h</span><b class="${cls(num(c.price_change_percentage_24h_in_currency))}">${fmtPct(c.price_change_percentage_24h_in_currency)}</b></div><div class="metric"><span>7g</span><b class="${cls(num(c.price_change_percentage_7d_in_currency))}">${fmtPct(c.price_change_percentage_7d_in_currency)}</b></div></div>
+      <div class="spark">${sparkSVG(trend.values)}</div><div class="trend-caption">${esc(trendCaption(c,trend.mode))}</div>${decisionChecksHTML(dec.checks)}
+      <div class="radar-reason"><b>Lettura attuale:</b> ${esc(dec.reason)}<br><b>Nota:</b> non essere nella Top 3 non significa essere scartata; può essere semplicemente dietro ad altri candidati nella scansione corrente.</div>
+      ${(!tracked&&!owned)?`<div class="opportunity-actions"><button data-watch-candidate="${esc(c.id)}">＋ Segui in Watchlist</button></div>`:''}
+    </article>`;
+  }
+
+  async function runRadarLookup(){
+    const input=$('#radarLookupInput'), box=$('#radarLookupResult');
+    if(!input||!box) return;
+    const term=input.value.trim().toLowerCase();
+    if(term.length<2){box.innerHTML='<div class="radar-lookup-hint">Scrivi almeno 2 caratteri.</div>';return;}
+    box.innerHTML='<div class="radar-lookup-hint">Analizzo il mercato…</div>';
+    try{
+      const rows=await getPaprikaUniverse(false);
+      const exact=rows.filter(x=>String(x.symbol||'').toLowerCase()===term||String(x.name||'').toLowerCase()===term||String(x.id||'').toLowerCase()===term);
+      const partial=rows.filter(x=>`${x.symbol} ${x.name} ${x.id}`.toLowerCase().includes(term));
+      const choices=[...exact,...partial].filter((x,i,a)=>a.findIndex(y=>y.id===x.id)===i).sort((a,b)=>num(a.market_cap_rank||999999)-num(b.market_cap_rank||999999));
+      const found=choices[0];
+      if(!found){box.innerHTML='<div class="radar-lookup-hint">Nessuna crypto trovata.</div>';return;}
+      const btc=rows.find(x=>String(x.symbol).toUpperCase()==='BTC')||market.bitcoin||{};
+      const prev=state.opportunity?.prev?.[found.id];
+      const assessed=analyzeOpportunity(found,btc,prev,new Set())||screenOpportunity(found,btc,prev,new Set());
+      const c={...found,...assessed,symbol:String(found.symbol||'').toUpperCase(),rel24:Number.isFinite(assessed?.rel24)?assessed.rel24:num(found.price_change_percentage_24h_in_currency)-num(btc.price_change_percentage_24h_in_currency),reason:assessed?.reason||'Analisi puntuale richiesta manualmente'};
+      market[c.id]={...market[c.id],...c};
+      box.innerHTML=radarLookupCard(c);
+      bindDynamic();
+    }catch(_){box.innerHTML='<div class="radar-lookup-hint">Analisi momentaneamente non disponibile. Riprova tra poco.</div>';}
+  }
+
   function renderRadar(){
     const s=portfolioSnapshot();
     const watch=watchAssets();
     const watchedIds=new Set(state.watchlistIds||[]);
     const opp=state.opportunity||defaultState().opportunity;
-    const scanTime=opp.time?fmtDate(opp.time):'mai';
     const allSignals=normalizeOpportunitySignals(opp.signals||[]).sort((a,b)=>num(b.time)-num(a.time));
     const activeSignals=allSignals.filter(sig=>!sig.outcome48).slice(0,8);
     const archivedSignals=allSignals.filter(sig=>!!sig.outcome48).slice(0,20);
     const stale=isMarketStale();
     const tab=state.ui?.radarTab==='watchlist'?'watchlist':'proposals';
     const proposals=(opp.candidates||[]).filter(c=>!watchedIds.has(c.id)).slice(0,3);
+    const secondary=(opp.secondary||[]).filter(c=>!watchedIds.has(c.id)&&!proposals.some(p=>p.id===c.id)).slice(0,7);
+    const stats=opp.stats||{};
 
     const signalCard=sig=>{
       const st=signalState(sig);
       return `<details class="signal-card"><summary class="signal-summary"><div><div class="signal-name">${esc(sig.symbol)} · ${esc(sig.name||'')}</div><div class="signal-meta">${fmtDate(sig.time)} · prezzo ${fmtPrice(num(sig.price))}</div><div class="signal-compact">${esc(signalOutcomeSentence(sig.outcome24,'24h'))} · ${esc(signalOutcomeSentence(sig.outcome48,'48h'))}</div></div><span class="status-pill ${st.tone}">${esc(st.label)}</span></summary><div class="signal-detail"><div class="simple-explain"><b>In parole semplici:</b> ${esc(humanSignalExplanation(sig))}</div><div class="technical-box"><b>Dati tecnici</b><div>${esc(sig.reasonLatest||sig.reason||'Dati in aggiornamento')}</div></div><div class="signal-result">${sig.outcome24?esc(signalOutcomeSentence(sig.outcome24,'Dopo 24h')):'Dopo 24h: in attesa'}<br>${sig.outcome48?esc(signalOutcomeSentence(sig.outcome48,'Dopo 48h')):'Dopo 48h: in attesa'}</div><button class="mini-link" data-open-asset="${esc(sig.symbol)}">Apri dettagli crypto</button></div></details>`;
     };
 
+    const totalVisible=proposals.length+secondary.length;
     const proposalsPanel=`
-      <div class="section-title radar-panel-title"><div><h2>Proposte Radar</h2><p>Le trova l’app. Tu decidi se una merita di passare nella Watchlist.</p></div><div class="right"><button class="chip-btn" data-action="scan-opportunities">◎ Scansiona</button></div></div>
+      <div class="section-title radar-panel-title"><div><h2>Proposte Radar</h2><p>Top 3 in evidenza, poi altri candidati validi senza confonderli con la Watchlist.</p></div><div class="right"><button class="chip-btn" data-action="scan-opportunities">◎ Scansiona</button></div></div>
       ${stale?`<div class="radar-stale-warning"><b>Dati non aggiornati:</b> i semafori restano sospesi finché non torna la connessione live.</div>`:''}
-      <div class="radar-flow"><b>Flusso:</b> Radar trova → tu scegli → Watchlist verifica nel tempo → eventuale setup confermato.</div>
-      <div class="opportunity-list">${proposals.length?proposals.map((c,i)=>{
-        const dec=proposalDecision(c);
-        const shownStatus=stale?'DATI NON AGGIORNATI':dec.label;
-        const shownTone=stale?'observe':dec.tone;
-        const trend=trendValuesFor(c.id,c,'7d');
-        return `<article class="opportunity-card" data-open-asset="${esc(c.symbol)}">
-          <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${i===0?'PROPOSTA PRINCIPALE':'PROPOSTA RADAR'}</div></div><span class="status-pill ${shownTone}">${esc(shownStatus)}</span></div>
-          <div class="radar-grid">
-            <div class="metric"><span>Prezzo</span><b>${fmtPrice(num(c.current_price))}</b></div>
-            <div class="metric"><span>1h</span><b class="${cls(num(c.price_change_percentage_1h_in_currency))}">${fmtPct(c.price_change_percentage_1h_in_currency)}</b></div>
-            <div class="metric"><span>24h</span><b class="${cls(num(c.price_change_percentage_24h_in_currency))}">${fmtPct(c.price_change_percentage_24h_in_currency)}</b></div>
-            <div class="metric"><span>vs BTC 24h</span><b class="${cls(num(c.rel24))}">${fmtPct(c.rel24)}</b></div>
-          </div>
-          <div class="spark">${sparkSVG(trend.values)}</div>
-          <div class="trend-caption">${esc(trendCaption(c,trend.mode))}</div>
-          ${decisionChecksHTML(dec.checks)}
-          <div class="radar-reason"><b>Lettura:</b> ${esc(dec.reason)}<br><b>Perché il Radar l’ha trovata:</b> ${esc(c.reason)}</div>
-          <div class="opportunity-actions"><button data-watch-candidate="${esc(c.id)}">＋ Segui in Watchlist</button></div>
-        </article>`;
-      }).join(''):'<div class="empty">Nessuna nuova proposta abbastanza pulita. Le crypto già nella tua Watchlist non vengono duplicate qui.</div>'}</div>
+      <div class="radar-flow"><b>Flusso:</b> Radar trova → Top 3 → candidati secondari → tu scegli → Watchlist verifica nel tempo.</div>
+      <div class="radar-clarity"><b>Importante:</b> non comparire nella Top 3 non significa essere scartata. Il Radar ora conserva fino a 7 candidati secondari e l’Assistente li analizza comunque.</div>
+      <div class="radar-lookup"><div><b>Controlla una crypto</b><span>Se in chat o altrove compare un nome come NEAR, puoi verificarlo qui anche se non è nella Top 3.</span></div><div class="radar-lookup-row"><input id="radarLookupInput" type="search" placeholder="es. NEAR, PYTH, MEW"><button class="chip-btn" data-action="radar-lookup">Analizza</button></div><div id="radarLookupResult"></div></div>
+      <div class="radar-tier-title"><span>PRIME OPPORTUNITÀ</span><b>${proposals.length}</b></div>
+      <div class="opportunity-list">${proposals.length?proposals.map((c,i)=>radarCandidateCard(c,{tier:'primary',index:i,stale})).join(''):'<div class="empty">Nessuna proposta abbastanza pulita nella Top 3.</div>'}</div>
+      <details class="secondary-hub" ${secondary.length&&proposals.length<3?'open':''}><summary>Altri candidati validi <span>${secondary.length}</span></summary><div class="secondary-hub-body"><p class="muted small">Hanno superato la soglia del Radar ma sono dietro alle prime opportunità della scansione corrente.</p><div class="opportunity-list">${secondary.length?secondary.map((c,i)=>radarCandidateCard(c,{tier:'secondary',index:i,stale})).join(''):'<div class="empty">Nessun candidato secondario valido in questa scansione.</div>'}</div></div></details>
+      <details class="radar-diagnostics"><summary>Copertura e diagnostica Radar</summary><div class="radar-diagnostics-grid"><span>Universo letto <b>${Number.isFinite(stats.rows)?stats.rows:'—'}</b></span><span>Filtrati validi <b>${Number.isFinite(stats.eligible)?stats.eligible:'—'}</b></span><span>Approfonditi <b>${Number.isFinite(stats.screened)?stats.screened:'—'}</b></span><span>Segnali trovati <b>${Number.isFinite(stats.assessed)?stats.assessed:'—'}</b></span><span>Visibili <b>${totalVisible}</b></span><span>Fonte <b>${esc(marketSource)}</b></span></div><p>Questi numeri servono a capire se il Radar sta davvero scandagliando il mercato o se una scansione è stata parziale.</p></details>
       <details class="signal-hub"><summary>Cosa sarebbe successo? <span>${activeSignals.length} attivi</span></summary><div class="signal-hub-body"><p class="muted small">Verifica didattica dei segnali salvati, senza dover comprare.</p><div class="signal-list">${activeSignals.length?activeSignals.map(signalCard).join(''):'<div class="empty">Nessun segnale attivo.</div>'}</div>${archivedSignals.length?`<details class="signal-archive"><summary>Archivio segnali conclusi <span>${archivedSignals.length}</span></summary><div class="signal-list archive-list">${archivedSignals.map(signalCard).join('')}</div></details>`:''}</div></details>`;
 
     const watchRank={'SETUP CONFERMATO':5,'ATTENDI CONFERMA':4,'OSSERVA':3,'NON ENTRARE ORA':2,'SCARTA':1};
@@ -889,25 +947,11 @@
       <div class="watch-help">Il semaforo qui è più severo del Radar: una proposta deve restare coerente nel tempo prima di diventare <b>SETUP CONFERMATO</b>.</div>
       <div class="radar-list">${watchRows.length?watchRows.map(({a,m,st,trend},i)=>`<article class="radar-card" data-open-asset="${esc(a.symbol)}">
           <div class="radar-top"><div><div class="radar-title">${esc(a.symbol)} · ${esc(a.name)}</div><div class="radar-sub">${i===0&&st.label!=='SCARTA'?'PRIORITÀ WATCHLIST':'WATCHLIST'}</div></div><div><span class="status-pill ${st.tone}">${esc(st.label)}</span><button class="watch-remove" data-remove-watch-id="${esc(a.id)}">rimuovi</button></div></div>
-          <div class="radar-grid">
-            <div class="metric"><span>Prezzo</span><b>${fmtPrice(num(m.current_price))}</b></div>
-            <div class="metric"><span>1h</span><b class="${cls(num(m.price_change_percentage_1h_in_currency))}">${fmtPct(m.price_change_percentage_1h_in_currency)}</b></div>
-            <div class="metric"><span>24h</span><b class="${cls(num(m.price_change_percentage_24h_in_currency))}">${fmtPct(m.price_change_percentage_24h_in_currency)}</b></div>
-            <div class="metric"><span>7g</span><b class="${cls(num(m.price_change_percentage_7d_in_currency))}">${fmtPct(m.price_change_percentage_7d_in_currency)}</b></div>
-          </div>
-          <div class="spark">${sparkSVG(trend.values)}</div>
-          <div class="trend-caption">${esc(trendCaption(m,trend.mode))}</div>
-          ${decisionChecksHTML(st.checks||[])}
-          <div class="watch-why"><b>${esc(st.label)}:</b> ${esc(st.reason)}</div>
+          <div class="radar-grid"><div class="metric"><span>Prezzo</span><b>${fmtPrice(num(m.current_price))}</b></div><div class="metric"><span>1h</span><b class="${cls(num(m.price_change_percentage_1h_in_currency))}">${fmtPct(m.price_change_percentage_1h_in_currency)}</b></div><div class="metric"><span>24h</span><b class="${cls(num(m.price_change_percentage_24h_in_currency))}">${fmtPct(m.price_change_percentage_24h_in_currency)}</b></div><div class="metric"><span>7g</span><b class="${cls(num(m.price_change_percentage_7d_in_currency))}">${fmtPct(m.price_change_percentage_7d_in_currency)}</b></div></div>
+          <div class="spark">${sparkSVG(trend.values)}</div><div class="trend-caption">${esc(trendCaption(m,trend.mode))}</div>${decisionChecksHTML(st.checks||[])}<div class="watch-why"><b>${esc(st.label)}:</b> ${esc(st.reason)}</div>
         </article>`).join(''):'<div class="empty">La Watchlist è vuota. Vai su Proposte Radar e scegli solo ciò che vuoi davvero seguire.</div>'}</div>`;
 
-    $('#view-radar').innerHTML=`
-      <div class="radar-tabs" role="tablist" aria-label="Sezioni Radar">
-        <button class="radar-tab ${tab==='proposals'?'active':''}" data-radar-tab="proposals">Proposte Radar <span>${proposals.length}</span></button>
-        <button class="radar-tab ${tab==='watchlist'?'active':''}" data-radar-tab="watchlist">Watchlist <span>${watch.length}</span></button>
-      </div>
-      ${tab==='proposals'?proposalsPanel:watchPanel}
-    `;
+    $('#view-radar').innerHTML=`<div class="radar-tabs" role="tablist" aria-label="Sezioni Radar"><button class="radar-tab ${tab==='proposals'?'active':''}" data-radar-tab="proposals">Proposte Radar <span>${totalVisible}</span></button><button class="radar-tab ${tab==='watchlist'?'active':''}" data-radar-tab="watchlist">Watchlist <span>${watch.length}</span></button></div>${tab==='proposals'?proposalsPanel:watchPanel}`;
   }
 
   function operationLabel(type){ return ({BUY:'Acquisto',SELL:'Vendita',DEPOSIT_PERSONAL:'Versamento personale',DEPOSIT_REWARD:'Reward / bonus',WITHDRAW:'Prelievo',TRANSFER:'Trasferimento'})[type]||type; }
@@ -996,6 +1040,15 @@
       const st=assistantEntryDecision(a,m);
       items.push({key:`watch:${a.id}`,type:'watch',symbol:a.symbol,name:a.name,id:a.id,label:st.label,tone:st.tone,reason:st.reason,checks:st.checks||[],priority:st.priority,price:num(m.current_price),h:num(m.price_change_percentage_1h_in_currency),d:num(m.price_change_percentage_24h_in_currency),w:num(m.price_change_percentage_7d_in_currency),rel:num(st.rel)});
     });
+    const watched=new Set(state.watchlistIds||[]), owned=new Set(snap.positions.map(p=>p.id));
+    const topIds=new Set((state.opportunity?.candidates||[]).map(x=>x.id));
+    allRadarCandidates().forEach(c=>{
+      if(watched.has(c.id)||owned.has(c.id)||!num(c.current_price)) return;
+      const st=proposalDecision(c);
+      const primary=topIds.has(c.id);
+      const rank={'CANDIDATO FORTE':primary?74:66,'DA OSSERVARE':primary?50:44,'NON ENTRARE ORA':18};
+      items.push({key:`candidate:${c.id}`,type:'candidate',tier:primary?'primary':'secondary',symbol:c.symbol,name:c.name,id:c.id,label:st.label,tone:st.tone,reason:st.reason,checks:st.checks||[],priority:rank[st.label]||40,price:num(c.current_price),h:num(c.price_change_percentage_1h_in_currency),d:num(c.price_change_percentage_24h_in_currency),w:num(c.price_change_percentage_7d_in_currency),rel:num(c.rel24)});
+    });
     return items.sort((a,b)=>num(b.priority)-num(a.priority)||String(a.symbol).localeCompare(String(b.symbol)));
   }
 
@@ -1033,8 +1086,9 @@
   }
 
   function assistantItemHTML(it,index=0){
-    const kind=it.type==='position'?'POSIZIONE APERTA':'WATCHLIST · POSSIBILE ENTRATA';
-    return `<details class="assistant-item ${esc(it.tone||'')}" ${index===0?'open':''}><summary><div><span class="assistant-kind">${kind}</span><b>${esc(it.symbol)} · ${esc(it.name)}</b><small>${esc(assistantMeta(it))}</small></div><span class="status-pill ${esc(it.tone||'')}">${esc(it.label)}</span></summary><div class="assistant-item-body"><p>${esc(it.reason)}</p>${decisionChecksHTML(it.checks||[])}<small>${it.type==='position'?'La lettura serve a gestire la posizione; non vende nulla.':'La lettura serve a decidere cosa approfondire; non compra nulla.'}</small></div></details>`;
+    const kind=it.type==='position'?'POSIZIONE APERTA':it.type==='watch'?'WATCHLIST · POSSIBILE ENTRATA':it.tier==='primary'?'RADAR · TOP 3':'RADAR · CANDIDATO SECONDARIO';
+    const note=it.type==='position'?'La lettura serve a gestire la posizione; non vende nulla.':it.type==='watch'?'La lettura serve a decidere se il setup è abbastanza maturo; non compra nulla.':'Il Radar lo considera valido ma non ancora scelto da te. Puoi passarlo in Watchlist per verificarlo nel tempo.';
+    return `<details class="assistant-item ${esc(it.tone||'')}" ${index===0?'open':''}><summary><div><span class="assistant-kind">${kind}</span><b>${esc(it.symbol)} · ${esc(it.name)}</b><small>${esc(assistantMeta(it))}</small></div><span class="status-pill ${esc(it.tone||'')}">${esc(it.label)}</span></summary><div class="assistant-item-body"><p>${esc(it.reason)}</p>${decisionChecksHTML(it.checks||[])}<small>${esc(note)}</small>${it.type==='candidate'?`<div class="assistant-actions"><button data-watch-candidate="${esc(it.id)}">＋ Segui in Watchlist</button></div>`:''}</div></details>`;
   }
 
   function assistantLogHTML(){
@@ -1050,11 +1104,12 @@
     const fresh=!isMarketStale();
     const positionItems=items.filter(x=>x.type==='position');
     const watchItems=items.filter(x=>x.type==='watch');
+    const candidateItems=items.filter(x=>x.type==='candidate');
     const top=items[0];
     const topText=!fresh?'I dati non sono abbastanza freschi: nessun semaforo va usato finché non torna il live.':top?`${top.symbol}: ${top.label}. ${top.reason}`:'Nessuna posizione o crypto in Watchlist da analizzare.';
     return `<div class="assistant-live ${fresh?'live':'stale'}"><div><span class="assistant-live-dot"></span><b>Auto-lettura ${fresh?'attiva':'in attesa dati'}</b><small>Ogni 5 minuti mentre l’app è aperta · ultima analisi ${assistantTime(a.time)}</small></div><button class="chip-btn" data-action="assistant-refresh">Aggiorna & analizza</button></div>
-      <div class="assistant-summary"><div class="lesson-tag">COSA RICHIEDE ATTENZIONE ADESSO</div><p>${esc(topText)}</p><div class="assistant-summary-grid"><span>Liquidità Base <b>${fmtEUR(snap.cash.base)}</b></span><span>Posizioni <b>${positionItems.length}</b></span><span>Watchlist <b>${watchItems.length}</b></span><span>Fonte <b>${esc(marketSource)}</b></span></div></div>
-      <div class="assistant-explain"><b>Come lavora:</b> i prezzi vengono letti ogni 5 minuti. L’app ricalcola automaticamente semafori di entrata e gestione posizione con gli stessi criteri usati nel Radar. Il Radar ampio continua a scandagliare il mercato ogni 15 minuti.</div>
+      <div class="assistant-summary"><div class="lesson-tag">COSA RICHIEDE ATTENZIONE ADESSO</div><p>${esc(topText)}</p><div class="assistant-summary-grid"><span>Liquidità Base <b>${fmtEUR(snap.cash.base)}</b></span><span>Posizioni <b>${positionItems.length}</b></span><span>Watchlist <b>${watchItems.length}</b></span><span>Radar validi <b>${candidateItems.length}</b></span><span>Fonte <b>${esc(marketSource)}</b></span></div></div>
+      <div class="assistant-explain"><b>Come lavora:</b> i prezzi vengono letti ogni 5 minuti. L’app ricalcola automaticamente semafori di entrata e gestione posizione con gli stessi criteri usati nel Radar. Il Radar ampio continua a scandagliare il mercato ogni 15 minuti e l’Assistente legge sia la Top 3 sia i candidati secondari validi.</div>
       <div class="section-title compact-section"><div><h2>Lettura automatica</h2><p>Prima le situazioni che richiedono più attenzione</p></div></div>
       <div class="assistant-list">${items.length?items.map(assistantItemHTML).join(''):'<div class="training-empty"><b>Niente da analizzare.</b><span>Aggiungi una crypto alla Watchlist o registra una posizione.</span></div>'}</div>
       <details class="assistant-log"><summary>Cambi di stato <span>${(state.assistant?.log||[]).length}</span></summary><div class="assistant-log-body">${assistantLogHTML()}</div></details>
@@ -1224,6 +1279,8 @@
     $$('[data-remove-watch-id]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation(); checkpointState('Modifica watchlist'); state.watchlistIds=(state.watchlistIds||[]).filter(x=>x!==b.dataset.removeWatchId); if(state.decision?.watchConfirm) delete state.decision.watchConfirm[b.dataset.removeWatchId]; saveState(); renderAll(); toast('Rimosso dalla watchlist');}));
     $$('[data-watch-candidate]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation(); addWatchById(b.dataset.watchCandidate); }));
     $$('[data-action="scan-opportunities"]').forEach(b=>b.addEventListener('click',()=>scanOpportunities(true)));
+    $$('[data-action="radar-lookup"]').forEach(b=>b.addEventListener('click',runRadarLookup));
+    $('#radarLookupInput')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();runRadarLookup();}});
     $$('[data-radar-tab]').forEach(b=>b.addEventListener('click',()=>{state.ui={...(state.ui||{}),radarTab:b.dataset.radarTab};saveState();renderAll();}));
     $$('[data-edit-op]').forEach(b=>b.addEventListener('click',()=>openOpSheet(state.ops.find(o=>o.id===b.dataset.editOp))));
     $$('[data-delete-op]').forEach(b=>b.addEventListener('click',()=>deleteOp(b.dataset.deleteOp)));
@@ -1277,7 +1334,7 @@
   function openAsset(symbol){
     const s=portfolioSnapshot();
     const pos=s.positions.find(p=>p.symbol===symbol) || null;
-    const meta=assetBySymbol(symbol)||pos||(state.opportunity?.candidates||[]).find(c=>c.symbol===symbol);
+    const meta=assetBySymbol(symbol)||pos||allRadarCandidates().find(c=>String(c.symbol).toUpperCase()===String(symbol).toUpperCase());
     if(!meta) return;
     currentSheetAsset={...meta,...(pos||{})}; currentRange='7d';
     const sheet=$('#assetSheet'); openBackdrop(sheet); renderAssetSheet();
@@ -1566,7 +1623,7 @@
     saveState(); closeSheets(); renderAll(); refreshMarket(true); toast(`${symbol} aggiunta alla watchlist`);
   }
   function addWatchById(id){
-    const a=assetById(id)||(state.opportunity?.candidates||[]).find(x=>x.id===id); if(!a)return; addWatchAsset(a);
+    const a=assetById(id)||allRadarCandidates().find(x=>x.id===id); if(!a)return; addWatchAsset(a);
   }
   function renderWatchChoices(choices){
     const snap=portfolioSnapshot(),ownedIds=new Set(snap.positions.map(p=>p.id));
@@ -1655,7 +1712,7 @@
 
   function wantedIds(){
     const snap=portfolioSnapshot();
-    const primary=['bitcoin','ethereum',...snap.positions.map(p=>p.id),...(state.watchlistIds||[]),...(state.opportunity?.candidates||[]).map(c=>c.id)];
+    const primary=['bitcoin','ethereum',...snap.positions.map(p=>p.id),...(state.watchlistIds||[]),...allRadarCandidates().map(c=>c.id)];
     const recentSignals=(state.opportunity?.signals||[]).filter(sig=>Date.now()-num(sig.time)<50*3600000).sort((a,b)=>num(b.time)-num(a.time)).slice(0,20).map(sig=>sig.id);
     return [...new Set([...primary,...recentSignals].filter(Boolean))].slice(0,80);
   }
@@ -1680,15 +1737,20 @@
       const screened=eligible.map(x=>screenOpportunity(x,btc,prev[x.id],noTrending)).sort((a,b)=>b._screenScore-a._screenScore||num(b.total_volume)-num(a.total_volume)).slice(0,42);
       const assessed=screened.map(x=>analyzeOpportunity(x,btc,prev[x.id],noTrending)).filter(Boolean);
       assessed.sort((a,b)=>{const rank={'POSSIBILE INGRESSO':4,PREPARATI:3,INTERESSANTE:3,OSSERVA:2,'NON INSEGUIRE':1};return ((rank[b.status]||0)-(rank[a.status]||0))||(b.score-a.score)||(num(b.total_volume)-num(a.total_volume));});
-      const candidates=assessed.slice(0,3);
+      const valid=assessed.filter(x=>x.status!=='NON INSEGUIRE');
+      const primaryPool=valid.length?valid:assessed;
+      const candidates=primaryPool.slice(0,3);
+      const candidateIds=new Set(candidates.map(x=>x.id));
+      const secondary=valid.filter(x=>!candidateIds.has(x.id)).slice(0,7);
       const now=Date.now(),nextPrev={};
       rows.slice(0,2000).forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)});
       updateSignalOutcomes(rows);
-      state.opportunity={...opp,time:now,candidates,prev:nextPrev,trending:[],trendingAt:now,signals:state.opportunity.signals||[]};
+      const stats={rows:rows.length,eligible:eligible.length,screened:screened.length,assessed:assessed.length,valid:valid.length,time:now};
+      state.opportunity={...opp,time:now,candidates,secondary,prev:nextPrev,trending:[],trendingAt:now,signals:state.opportunity.signals||[],stats};
       recordOpportunitySignals(candidates);
-      candidates.forEach(c=>market[c.id]={...market[c.id],...c});
+      [...candidates,...secondary].forEach(c=>market[c.id]={...market[c.id],...c});
       recordDecisionTracking(); runAutoAnalysis('radar',false); saveState(); renderAll();
-      toast(candidates.length?`Radar aggiornato: ${candidates.length} opportunità`:'Radar: nessun segnale pulito al momento');
+      toast((candidates.length+secondary.length)?`Radar aggiornato: ${candidates.length} top + ${secondary.length} secondari`:'Radar: nessun segnale pulito al momento');
       return true;
     }catch(err){
       toast('Radar non disponibile: mantengo gli ultimi dati e riprovo');
@@ -1705,7 +1767,7 @@
     const status=$('#dataStatus');
     if(!force && Date.now()-num(state.marketCache?.time)<MARKET_TTL){
       market={...BASELINE.seedMarket,...(state.marketCache.data||{})};
-      (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c});
+      allRadarCandidates().forEach(c=>market[c.id]={...market[c.id],...c});
       setDataStatus('cache'); runAutoAnalysis('cache',true); renderAll(); return true;
     }
     marketRefreshInFlight=true;
@@ -1717,7 +1779,7 @@
       const wantedSymbols=new Set();
       portfolioSnapshot().positions.forEach(p=>wantedSymbols.add(String(p.symbol).toUpperCase()));
       watchAssets().forEach(a=>wantedSymbols.add(String(a.symbol).toUpperCase()));
-      (state.opportunity?.candidates||[]).forEach(a=>wantedSymbols.add(String(a.symbol).toUpperCase()));
+      allRadarCandidates().forEach(a=>wantedSymbols.add(String(a.symbol).toUpperCase()));
       wantedSymbols.add('BTC'); wantedSymbols.add('ETH');
       const data={...market};
       let matched=0;
@@ -1745,7 +1807,7 @@
         market=data; updateSignalOutcomes(arr); state.marketCache={time:Date.now(),data}; marketSource='CoinGecko'; recordDecisionTracking(); runAutoAnalysis('live',false); saveState(); setDataStatus('live'); renderAll(); return true;
       }catch(_){
         market={...BASELINE.seedMarket,...(state.marketCache?.data||{})};
-        (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c});
+        allRadarCandidates().forEach(c=>market[c.id]={...market[c.id],...c});
         marketSource='cache'; setDataStatus('error'); renderAll(); return false;
       }
     } finally { marketRefreshInFlight=false; }

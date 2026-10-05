@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.8.0';
+  const VERSION = '2.8.1';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 4 * 60 * 1000;
   const AUTO_REFRESH_MS = 5 * 60 * 1000;
@@ -91,7 +91,8 @@
     challenge: null,
     challengeArchives: [],
     training: {seenLessons:{},attempts:[]},
-    ui: {lastView:'home',radarTab:'proposals',trainingTab:'entries'}
+    assistant: {time:0,source:'',fresh:false,items:[],log:[],lastStatus:{}},
+    ui: {lastView:'home',radarTab:'proposals',trainingTab:'entries',assistantTab:'auto'}
   });
 
   let state = loadState();
@@ -240,7 +241,7 @@
       if(!raw) return defaultState();
       const saved = JSON.parse(raw);
       const base = defaultState();
-      const merged = {...base,...saved,ui:{...base.ui,...(saved.ui||{})},training:{...base.training,...(saved.training||{}),seenLessons:{...(base.training.seenLessons||{}),...(saved.training?.seenLessons||{})},attempts:Array.isArray(saved.training?.attempts)?saved.training.attempts:[]},marketCache:saved.marketCache||base.marketCache,opportunity:{...base.opportunity,...(saved.opportunity||{})},decision:{...base.decision,...(saved.decision||{}),peaks:{...(base.decision.peaks||{}),...(saved.decision?.peaks||{})},samples:{...(base.decision.samples||{}),...(saved.decision?.samples||{})}}};
+      const merged = {...base,...saved,ui:{...base.ui,...(saved.ui||{})},training:{...base.training,...(saved.training||{}),seenLessons:{...(base.training.seenLessons||{}),...(saved.training?.seenLessons||{})},attempts:Array.isArray(saved.training?.attempts)?saved.training.attempts:[]},assistant:{...base.assistant,...(saved.assistant||{}),items:Array.isArray(saved.assistant?.items)?saved.assistant.items:[],log:Array.isArray(saved.assistant?.log)?saved.assistant.log:[],lastStatus:{...(base.assistant.lastStatus||{}),...(saved.assistant?.lastStatus||{})}},marketCache:saved.marketCache||base.marketCache,opportunity:{...base.opportunity,...(saved.opportunity||{})},decision:{...base.decision,...(saved.decision||{}),peaks:{...(base.decision.peaks||{}),...(saved.decision?.peaks||{})},samples:{...(base.decision.samples||{}),...(saved.decision?.samples||{})}}};
       if(!Array.isArray(saved.watchlistIds)){
         merged.watchlistIds=(saved.watchlist||[]).map(sym=>CATALOG.find(a=>a.symbol===String(sym).toUpperCase())?.id).filter(Boolean);
       }
@@ -260,7 +261,7 @@
   function restoreCheckpoint(){
     const cp=getCheckpoint(); if(!cp?.state){toast('Nessun punto sicurezza disponibile');return;}
     if(!confirm(`Ripristinare il punto sicurezza “${cp.label||'salvataggio'}”?`)) return;
-    state={...defaultState(),...cp.state,training:{...defaultState().training,...(cp.state.training||{}),seenLessons:{...(cp.state.training?.seenLessons||{})},attempts:Array.isArray(cp.state.training?.attempts)?cp.state.training.attempts:[]},opportunity:{...defaultState().opportunity,...(cp.state.opportunity||{})},decision:{...defaultState().decision,...(cp.state.decision||{}),peaks:{...(cp.state.decision?.peaks||{})},samples:{...(cp.state.decision?.samples||{})}}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll(); refreshMarket(true); toast('Punto sicurezza ripristinato');
+    state={...defaultState(),...cp.state,training:{...defaultState().training,...(cp.state.training||{}),seenLessons:{...(cp.state.training?.seenLessons||{})},attempts:Array.isArray(cp.state.training?.attempts)?cp.state.training.attempts:[]},assistant:{...defaultState().assistant,...(cp.state.assistant||{}),items:Array.isArray(cp.state.assistant?.items)?cp.state.assistant.items:[],log:Array.isArray(cp.state.assistant?.log)?cp.state.assistant.log:[],lastStatus:{...(cp.state.assistant?.lastStatus||{})}},opportunity:{...defaultState().opportunity,...(cp.state.opportunity||{})},decision:{...defaultState().decision,...(cp.state.decision||{}),peaks:{...(cp.state.decision?.peaks||{})},samples:{...(cp.state.decision?.samples||{})}}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll(); refreshMarket(true); toast('Punto sicurezza ripristinato');
   }
 
   function allAssets(){
@@ -948,6 +949,119 @@
   }
 
 
+  // RC8.1 · Trading assistito automatico. Usa gli stessi dati già scaricati
+  // dall'app: nessun ordine viene eseguito e non vengono fatte chiamate API extra.
+  function assistantEntryDecision(a,m){
+    const st=watchlistDecision(a,m);
+    const checks=st.checks||[];
+    const bad=checks.filter(c=>c.state==='bad');
+    const volBad=bad.some(c=>String(c.label).toLowerCase().includes('volume'));
+    let label=st.label,tone=st.tone,reason=st.reason,priority=35;
+    if(st.label==='SETUP CONFERMATO'){
+      if(volBad){
+        label='ATTENDI VOLUME'; tone='prepare'; priority=72;
+        reason='Il setup è confermato nel tempo, ma il volume non sta ancora sostenendo abbastanza il movimento. È il punto da controllare prima di valutare un ingresso.';
+      }else if(bad.length){
+        label='ATTENDI TRIGGER'; tone='prepare'; priority=68;
+        reason='Il setup è confermato, ma almeno un indicatore resta debole. Aspetta che il quadro torni pienamente coerente.';
+      }else{
+        label='INGRESSO DA VALUTARE'; tone='ready'; priority=90;
+        reason='Il setup è rimasto coerente per più scansioni e non ci sono segnali rossi. È un ingresso da valutare, non un ordine automatico.';
+      }
+    }else if(st.label==='ATTENDI CONFERMA') priority=60;
+    else if(st.label==='NON ENTRARE ORA') priority=20;
+    else if(st.label==='SCARTA') priority=10;
+    else priority=35;
+    return {...st,label,tone,reason,priority};
+  }
+
+  function assistantPositionDecision(p,m){
+    const st=positionDecision(p,m);
+    const rank={'ATTENZIONE':96,'VALUTA PRESA PROFITTO':92,'CONTROLLA PROFITTO':76,'IN PROFITTO':55,'MANTIENI':35};
+    return {...st,priority:rank[st.label]||30};
+  }
+
+  function buildAssistantItems(){
+    const snap=portfolioSnapshot();
+    const items=[];
+    snap.positions.forEach(p=>{
+      const m=market[p.id]||state.marketCache?.data?.[p.id]||{};
+      if(!num(m.current_price)) return;
+      const st=assistantPositionDecision(p,m);
+      items.push({key:`position:${p.account}:${p.id||p.symbol}`,type:'position',symbol:p.symbol,name:p.name||p.symbol,account:p.account,label:st.label,tone:st.tone,reason:st.reason,checks:st.checks||[],priority:st.priority,price:num(m.current_price),pnl:positionPnl(p),pct:positionPnlPct(p),peakPct:st.peakPct,pullback:st.pullback});
+    });
+    watchAssets().forEach(a=>{
+      const m=market[a.id]||state.marketCache?.data?.[a.id]||{};
+      if(!num(m.current_price)) return;
+      const st=assistantEntryDecision(a,m);
+      items.push({key:`watch:${a.id}`,type:'watch',symbol:a.symbol,name:a.name,id:a.id,label:st.label,tone:st.tone,reason:st.reason,checks:st.checks||[],priority:st.priority,price:num(m.current_price),h:num(m.price_change_percentage_1h_in_currency),d:num(m.price_change_percentage_24h_in_currency),w:num(m.price_change_percentage_7d_in_currency),rel:num(st.rel)});
+    });
+    return items.sort((a,b)=>num(b.priority)-num(a.priority)||String(a.symbol).localeCompare(String(b.symbol)));
+  }
+
+  function runAutoAnalysis(source='auto',persist=true){
+    state.assistant={...defaultState().assistant,...(state.assistant||{}),lastStatus:{...(state.assistant?.lastStatus||{})},log:Array.isArray(state.assistant?.log)?state.assistant.log:[]};
+    const fresh=!isMarketStale();
+    const now=Date.now();
+    const items=buildAssistantItems();
+    if(fresh){
+      const last={...(state.assistant.lastStatus||{})};
+      const log=[...(state.assistant.log||[])];
+      items.forEach(it=>{
+        const prev=last[it.key];
+        if(prev && prev.label!==it.label){
+          log.unshift({time:now,key:it.key,type:it.type,symbol:it.symbol,from:prev.label,to:it.label,reason:it.reason,price:it.price});
+        }
+        last[it.key]={label:it.label,time:now,price:it.price};
+      });
+      state.assistant.lastStatus=last;
+      state.assistant.log=log.slice(0,80);
+    }
+    state.assistant={...state.assistant,time:now,source,fresh,items};
+    if(persist) saveState();
+    return items;
+  }
+
+  function assistantTime(ts){
+    if(!ts) return 'mai';
+    return new Intl.DateTimeFormat('it-IT',{hour:'2-digit',minute:'2-digit'}).format(new Date(ts));
+  }
+
+  function assistantMeta(it){
+    if(it.type==='position') return `P/L ${fmtEUR(it.pnl)} · ${fmtPct(it.pct)}${Number.isFinite(it.pullback)?` · dal max −${num(it.pullback).toFixed(1)} pt`:''}`;
+    return `1h ${fmtPct(it.h)} · 24h ${fmtPct(it.d)} · 7g ${fmtPct(it.w)} · vs BTC ${fmtPct(it.rel)}`;
+  }
+
+  function assistantItemHTML(it,index=0){
+    const kind=it.type==='position'?'POSIZIONE APERTA':'WATCHLIST · POSSIBILE ENTRATA';
+    return `<details class="assistant-item ${esc(it.tone||'')}" ${index===0?'open':''}><summary><div><span class="assistant-kind">${kind}</span><b>${esc(it.symbol)} · ${esc(it.name)}</b><small>${esc(assistantMeta(it))}</small></div><span class="status-pill ${esc(it.tone||'')}">${esc(it.label)}</span></summary><div class="assistant-item-body"><p>${esc(it.reason)}</p>${decisionChecksHTML(it.checks||[])}<small>${it.type==='position'?'La lettura serve a gestire la posizione; non vende nulla.':'La lettura serve a decidere cosa approfondire; non compra nulla.'}</small></div></details>`;
+  }
+
+  function assistantLogHTML(){
+    const rows=(state.assistant?.log||[]).slice(0,20);
+    if(!rows.length) return '<div class="training-empty"><b>Nessun cambio di stato ancora.</b><span>Qui compariranno solo i cambi reali dei semafori, senza ripetere la stessa lettura ogni 5 minuti.</span></div>';
+    return `<div class="assistant-log-list">${rows.map(x=>`<div class="assistant-log-row"><div><b>${esc(x.symbol)}</b><span>${assistantTime(x.time)}</span></div><p>${esc(x.from)} → <strong>${esc(x.to)}</strong></p></div>`).join('')}</div>`;
+  }
+
+  function renderAssistantAuto(){
+    const a=state.assistant||defaultState().assistant;
+    const items=Array.isArray(a.items)&&a.items.length?a.items:runAutoAnalysis('schermata',false);
+    const snap=portfolioSnapshot();
+    const fresh=!isMarketStale();
+    const positionItems=items.filter(x=>x.type==='position');
+    const watchItems=items.filter(x=>x.type==='watch');
+    const top=items[0];
+    const topText=!fresh?'I dati non sono abbastanza freschi: nessun semaforo va usato finché non torna il live.':top?`${top.symbol}: ${top.label}. ${top.reason}`:'Nessuna posizione o crypto in Watchlist da analizzare.';
+    return `<div class="assistant-live ${fresh?'live':'stale'}"><div><span class="assistant-live-dot"></span><b>Auto-lettura ${fresh?'attiva':'in attesa dati'}</b><small>Ogni 5 minuti mentre l’app è aperta · ultima analisi ${assistantTime(a.time)}</small></div><button class="chip-btn" data-action="assistant-refresh">Aggiorna & analizza</button></div>
+      <div class="assistant-summary"><div class="lesson-tag">COSA RICHIEDE ATTENZIONE ADESSO</div><p>${esc(topText)}</p><div class="assistant-summary-grid"><span>Liquidità Base <b>${fmtEUR(snap.cash.base)}</b></span><span>Posizioni <b>${positionItems.length}</b></span><span>Watchlist <b>${watchItems.length}</b></span><span>Fonte <b>${esc(marketSource)}</b></span></div></div>
+      <div class="assistant-explain"><b>Come lavora:</b> i prezzi vengono letti ogni 5 minuti. L’app ricalcola automaticamente semafori di entrata e gestione posizione con gli stessi criteri usati nel Radar. Il Radar ampio continua a scandagliare il mercato ogni 15 minuti.</div>
+      <div class="section-title compact-section"><div><h2>Lettura automatica</h2><p>Prima le situazioni che richiedono più attenzione</p></div></div>
+      <div class="assistant-list">${items.length?items.map(assistantItemHTML).join(''):'<div class="training-empty"><b>Niente da analizzare.</b><span>Aggiungi una crypto alla Watchlist o registra una posizione.</span></div>'}</div>
+      <details class="assistant-log"><summary>Cambi di stato <span>${(state.assistant?.log||[]).length}</span></summary><div class="assistant-log-body">${assistantLogHTML()}</div></details>
+      <div class="assistant-limit"><b>Importante:</b> questa PWA può analizzare ogni 5 minuti mentre è aperta. Android può sospenderla quando è chiusa o in background; quando torni nell’app viene eseguito subito un nuovo controllo. Per un monitoraggio 24/7 a schermo chiuso servirebbe in futuro un servizio esterno/backend.</div>`;
+  }
+
+
   const TRAINING_LESSONS = [
     {title:'Prezzo medio di carico',text:'È il costo medio delle unità che possiedi. Serve per capire se il prezzo attuale ti sta portando profitto o perdita.'},
     {title:'P/L latente e realizzato',text:'Latente riguarda ciò che possiedi ancora. Realizzato è il risultato già cristallizzato con una vendita.'},
@@ -1039,22 +1153,25 @@
   }
   function renderSchool(){
     state.training=state.training||{seenLessons:{},attempts:[]};
+    const assistantTab=state.ui?.assistantTab||'auto';
     const progress=trainingProgress();
     const tab=state.ui?.trainingTab||'entries';
     const todayMode=trainingEntryCandidate()?'entry':'exit';
     const signals=[...(state.opportunity?.signals||[])].sort((a,b)=>num(b.time)-num(a.time)).slice(0,12);
-    let panel='';
+    let trainingPanel='';
     if(tab==='basics'){
-      panel=`<div class="training-lessons">${TRAINING_LESSONS.map((l,i)=>`<details class="training-lesson" data-training-lesson="${i}"><summary><span>${state.training.seenLessons?.[i]?'✓':'○'}</span><b>${esc(l.title)}</b></summary><p>${esc(l.text)}</p></details>`).join('')}</div>`;
-    }else if(tab==='entries') panel=trainingScenarioHTML('entry');
-    else if(tab==='exits') panel=trainingScenarioHTML('exit');
-    else panel=`<div class="training-history"><p class="muted small">Segnali reali salvati dal Radar. Qui non si valuta quanto hai guadagnato: si controlla se la lettura iniziale aveva senso.</p>${signals.length?signals.map(trainingHistoryCard).join(''):'<div class="training-empty"><b>Nessun segnale salvato.</b><span>Quando il Radar registra segnali, compariranno qui con il confronto 24h/48h.</span></div>'}</div>`;
-    $('#view-school').innerHTML=`
-      <div class="section-title"><div><h2>Training</h2><p>Impara a leggere gli stessi segnali usati da Crypto Conte</p></div></div>
-      <div class="training-progress"><div><span>Hai già visto</span><b>${progress.lessons} basi · ${progress.entry} entrate · ${progress.exit} uscite</b></div><small>Niente punteggi: conta capire il perché.</small></div>
+      trainingPanel=`<div class="training-lessons">${TRAINING_LESSONS.map((l,i)=>`<details class="training-lesson" data-training-lesson="${i}"><summary><span>${state.training.seenLessons?.[i]?'✓':'○'}</span><b>${esc(l.title)}</b></summary><p>${esc(l.text)}</p></details>`).join('')}</div>`;
+    }else if(tab==='entries') trainingPanel=trainingScenarioHTML('entry');
+    else if(tab==='exits') trainingPanel=trainingScenarioHTML('exit');
+    else trainingPanel=`<div class="training-history"><p class="muted small">Segnali reali salvati dal Radar. Qui non si valuta quanto hai guadagnato: si controlla se la lettura iniziale aveva senso.</p>${signals.length?signals.map(trainingHistoryCard).join(''):'<div class="training-empty"><b>Nessun segnale salvato.</b><span>Quando il Radar registra segnali, compariranno qui con il confronto 24h/48h.</span></div>'}</div>`;
+    const trainingHTML=`<div class="training-progress"><div><span>Hai già visto</span><b>${progress.lessons} basi · ${progress.entry} entrate · ${progress.exit} uscite</b></div><small>Niente punteggi: conta capire il perché.</small></div>
       ${trainingScenarioHTML(todayMode,{today:true})}
       <div class="training-tabs"><button class="training-tab ${tab==='basics'?'active':''}" data-training-tab="basics">Basi</button><button class="training-tab ${tab==='entries'?'active':''}" data-training-tab="entries">Entrate</button><button class="training-tab ${tab==='exits'?'active':''}" data-training-tab="exits">Uscite</button><button class="training-tab ${tab==='history'?'active':''}" data-training-tab="history">Storico</button></div>
-      <div class="training-panel">${panel}</div>
+      <div class="training-panel">${trainingPanel}</div>`;
+    $('#view-school').innerHTML=`
+      <div class="section-title"><div><h2>Assistente</h2><p>Trading assistito automatico + Training sugli stessi segnali</p></div></div>
+      <div class="assistant-tabs"><button class="assistant-tab ${assistantTab==='auto'?'active':''}" data-assistant-tab="auto">Auto-analisi</button><button class="assistant-tab ${assistantTab==='training'?'active':''}" data-assistant-tab="training">Training</button></div>
+      ${assistantTab==='auto'?renderAssistantAuto():trainingHTML}
     `;
   }
 
@@ -1118,6 +1235,8 @@
     $$('[data-action="restore-safety"]').forEach(b=>b.addEventListener('click',restoreCheckpoint));
     $$('[data-action="new-challenge"]').forEach(b=>b.addEventListener('click',openChallengeSheet));
     $$('[data-action="reset"]').forEach(b=>b.addEventListener('click',resetState));
+    $$('[data-assistant-tab]').forEach(b=>b.addEventListener('click',()=>{state.ui={...(state.ui||{}),assistantTab:b.dataset.assistantTab};saveState();renderAll();window.scrollTo({top:0,behavior:'smooth'});}));
+    $$('[data-action="assistant-refresh"]').forEach(b=>b.addEventListener('click',async()=>{b.disabled=true;b.textContent='analizzo…';apiBackoffUntil=0;await refreshMarket(true);runAutoAnalysis('manuale',true);renderAll();toast('Auto-analisi aggiornata');}));
     $$('[data-training-tab]').forEach(b=>b.addEventListener('click',()=>{state.ui={...(state.ui||{}),trainingTab:b.dataset.trainingTab};saveState();renderAll();window.scrollTo({top:0,behavior:'smooth'});}));
     $$('.training-scenario').forEach(card=>{
       card.querySelectorAll('[data-training-choice]').forEach(btn=>btn.addEventListener('click',()=>{card.querySelectorAll('[data-training-choice]').forEach(x=>x.classList.toggle('selected',x===btn));card.dataset.selected=btn.dataset.trainingChoice;}));
@@ -1142,6 +1261,10 @@
     $$('.nav-btn[data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
     state.ui.lastView=name; saveState(); window.scrollTo({top:0,behavior:'smooth'});
     if(name==='radar') scanOpportunities(false);
+    if(name==='school'){
+      runAutoAnalysis('apertura',true);
+      if(Date.now()-num(state.marketCache?.time)>45000) refreshMarket(true);
+    }
   }
 
   function openBackdrop(sheet){
@@ -1564,7 +1687,7 @@
       state.opportunity={...opp,time:now,candidates,prev:nextPrev,trending:[],trendingAt:now,signals:state.opportunity.signals||[]};
       recordOpportunitySignals(candidates);
       candidates.forEach(c=>market[c.id]={...market[c.id],...c});
-      recordDecisionTracking(); saveState(); renderAll();
+      recordDecisionTracking(); runAutoAnalysis('radar',false); saveState(); renderAll();
       toast(candidates.length?`Radar aggiornato: ${candidates.length} opportunità`:'Radar: nessun segnale pulito al momento');
       return true;
     }catch(err){
@@ -1583,7 +1706,7 @@
     if(!force && Date.now()-num(state.marketCache?.time)<MARKET_TTL){
       market={...BASELINE.seedMarket,...(state.marketCache.data||{})};
       (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c});
-      setDataStatus('cache'); renderAll(); return true;
+      setDataStatus('cache'); runAutoAnalysis('cache',true); renderAll(); return true;
     }
     marketRefreshInFlight=true;
     status.className='data-status'; status.innerHTML='<span class="dot"></span><span>aggiorno prezzi e trend…</span>';
@@ -1611,7 +1734,7 @@
       updateSignalOutcomes(rows);
       state.marketCache={time:Date.now(),data};
       marketSource='CoinPaprika';
-      recordDecisionTracking(); saveState(); setDataStatus('live'); renderAll(); return true;
+      recordDecisionTracking(); runAutoAnalysis('live',false); saveState(); setDataStatus('live'); renderAll(); return true;
     }catch(paprikaErr){
       // Seconda fonte: CoinGecko. Se il browser la blocca, l'app resta comunque sulla cache.
       try{
@@ -1619,7 +1742,7 @@
         const url=`https://api.coingecko.com/api/v3/coins/markets?vs_currency=eur&ids=${encodeURIComponent(ids.join(','))}&order=market_cap_desc&sparkline=true&price_change_percentage=1h,24h,7d,30d&locale=it&precision=full`;
         const res=await cgFetch(url); const arr=await res.json();
         const data={...market}; arr.forEach(x=>data[x.id]=x);
-        market=data; updateSignalOutcomes(arr); state.marketCache={time:Date.now(),data}; marketSource='CoinGecko'; recordDecisionTracking(); saveState(); setDataStatus('live'); renderAll(); return true;
+        market=data; updateSignalOutcomes(arr); state.marketCache={time:Date.now(),data}; marketSource='CoinGecko'; recordDecisionTracking(); runAutoAnalysis('live',false); saveState(); setDataStatus('live'); renderAll(); return true;
       }catch(_){
         market={...BASELINE.seedMarket,...(state.marketCache?.data||{})};
         (state.opportunity?.candidates||[]).forEach(c=>market[c.id]={...market[c.id],...c});
@@ -1643,6 +1766,7 @@
 
   function init(){
     recordDecisionTracking();
+    runAutoAnalysis('avvio',false);
     renderAll(); showView(state.ui.lastView||'home');
     $$('.nav-btn[data-view]').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));
     $('.nav-main').addEventListener('click',()=>openOpSheet());

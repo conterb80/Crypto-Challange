@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.7.0';
+  const VERSION = '2.8.0';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 4 * 60 * 1000;
   const AUTO_REFRESH_MS = 5 * 60 * 1000;
@@ -90,7 +90,8 @@
     decision: {peaks:{},samples:{}},
     challenge: null,
     challengeArchives: [],
-    ui: {lastView:'home',radarTab:'proposals'}
+    training: {seenLessons:{},attempts:[]},
+    ui: {lastView:'home',radarTab:'proposals',trainingTab:'entries'}
   });
 
   let state = loadState();
@@ -239,7 +240,7 @@
       if(!raw) return defaultState();
       const saved = JSON.parse(raw);
       const base = defaultState();
-      const merged = {...base,...saved,ui:{...base.ui,...(saved.ui||{})},marketCache:saved.marketCache||base.marketCache,opportunity:{...base.opportunity,...(saved.opportunity||{})},decision:{...base.decision,...(saved.decision||{}),peaks:{...(base.decision.peaks||{}),...(saved.decision?.peaks||{})},samples:{...(base.decision.samples||{}),...(saved.decision?.samples||{})}}};
+      const merged = {...base,...saved,ui:{...base.ui,...(saved.ui||{})},training:{...base.training,...(saved.training||{}),seenLessons:{...(base.training.seenLessons||{}),...(saved.training?.seenLessons||{})},attempts:Array.isArray(saved.training?.attempts)?saved.training.attempts:[]},marketCache:saved.marketCache||base.marketCache,opportunity:{...base.opportunity,...(saved.opportunity||{})},decision:{...base.decision,...(saved.decision||{}),peaks:{...(base.decision.peaks||{}),...(saved.decision?.peaks||{})},samples:{...(base.decision.samples||{}),...(saved.decision?.samples||{})}}};
       if(!Array.isArray(saved.watchlistIds)){
         merged.watchlistIds=(saved.watchlist||[]).map(sym=>CATALOG.find(a=>a.symbol===String(sym).toUpperCase())?.id).filter(Boolean);
       }
@@ -259,7 +260,7 @@
   function restoreCheckpoint(){
     const cp=getCheckpoint(); if(!cp?.state){toast('Nessun punto sicurezza disponibile');return;}
     if(!confirm(`Ripristinare il punto sicurezza “${cp.label||'salvataggio'}”?`)) return;
-    state={...defaultState(),...cp.state,opportunity:{...defaultState().opportunity,...(cp.state.opportunity||{})},decision:{...defaultState().decision,...(cp.state.decision||{}),peaks:{...(cp.state.decision?.peaks||{})},samples:{...(cp.state.decision?.samples||{})}}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll(); refreshMarket(true); toast('Punto sicurezza ripristinato');
+    state={...defaultState(),...cp.state,training:{...defaultState().training,...(cp.state.training||{}),seenLessons:{...(cp.state.training?.seenLessons||{})},attempts:Array.isArray(cp.state.training?.attempts)?cp.state.training.attempts:[]},opportunity:{...defaultState().opportunity,...(cp.state.opportunity||{})},decision:{...defaultState().decision,...(cp.state.decision||{}),peaks:{...(cp.state.decision?.peaks||{})},samples:{...(cp.state.decision?.samples||{})}}}; saveState(); market={...BASELINE.seedMarket,...(state.marketCache?.data||{})}; renderAll(); refreshMarket(true); toast('Punto sicurezza ripristinato');
   }
 
   function allAssets(){
@@ -947,27 +948,113 @@
   }
 
 
-  const LESSONS = [
-    ['Prezzo medio di carico','È il costo medio delle unità che possiedi. Se aggiungi una nuova quantità a un prezzo diverso, l’app ricalcola automaticamente la media.'],
-    ['P/L latente e realizzato','Latente riguarda solo ciò che possiedi ancora. Realizzato nasce sulla parte venduta. Il risultato totale dell’asset è realizzato + latente, senza sommare due volte l’incasso.'],
-    ['Vendita parziale','L’incasso netto contiene sia capitale recuperato sia profitto o perdita. Per questo l’app separa lordo, commissione, costo di carico ceduto, P/L realizzato e costo residuo.'],
-    ['24h, 7g e 30g','Sono finestre diverse. Un +4% nelle ultime 24 ore può convivere con un trend settimanale negativo: per questo il Radar mostra più orizzonti.'],
-    ['Volume','Il volume indica quanto valore è stato scambiato. Un movimento di prezzo accompagnato da volume elevato è diverso da un movimento con scambi ridotti.'],
-    ['Liquidità','Quando vendi una crypto, il denaro torna liquidità nel conto Base o Test. Solo quando registri un nuovo acquisto quella liquidità viene nuovamente investita.'],
-    ['Commissioni','Anche pochi centesimi cambiano il risultato reale. Inserirle quando sono note evita di sovrastimare il profitto.'],
-    ['Proposte Radar e Watchlist','Le Proposte Radar sono idee trovate automaticamente. Solo quando scegli Segui entrano nella Watchlist, dove vengono verificate nel tempo. Nessun semaforo è un ordine automatico.'],
-    ['Forza relativa vs BTC','Confronta il movimento di una crypto con Bitcoin. Se fa +5% mentre BTC fa +1%, la forza relativa sulle 24h è circa +4 punti percentuali.'],
-    ['NON ENTRARE ORA','Segnala un movimento già molto esteso. Puoi continuare a osservare la crypto, ma l’app evita di confondere una corsa già avvenuta con un segnale iniziale.'],
-    ['Cosa sarebbe successo?','La card resta compatta e si apre al tocco: mostra in parole semplici perché il segnale è nato, i dati tecnici e il confronto dopo 24h e 48h.'],
-    ['SETUP CONFERMATO','Nella Watchlist compare solo quando i segnali di ingresso restano coerenti per almeno due scansioni consecutive. Serve a dare priorità, non a comprare automaticamente.'],
-    ['Semaforo posizione','MANTIENI, IN PROFITTO, CONTROLLA PROFITTO, VALUTA PRESA PROFITTO e ATTENZIONE combinano P/L, trend, forza vs BTC e distanza dal massimo. Non sono ordini automatici.'],
-    ['Massimo registrato','L’app memorizza il miglior P/L visto durante la challenge attiva. Se il profitto arretra dal massimo mentre momentum e forza peggiorano, il semaforo diventa più prudente.'],
-    ['Trend nel Radar','Quando la fonte non offre una serie completa, l’app mostra una direzione sintetica costruita dai dati reali 7g, 24h e 1h. Con l’uso accumula anche campioni propri e il grafico diventa più dettagliato.']
+  const TRAINING_LESSONS = [
+    {title:'Prezzo medio di carico',text:'È il costo medio delle unità che possiedi. Serve per capire se il prezzo attuale ti sta portando profitto o perdita.'},
+    {title:'P/L latente e realizzato',text:'Latente riguarda ciò che possiedi ancora. Realizzato è il risultato già cristallizzato con una vendita.'},
+    {title:'Momentum 1h e 24h',text:'Misura quanto il prezzo sta accelerando nel breve. Un momentum positivo aiuta, ma da solo non basta per entrare.'},
+    {title:'Trend 7 giorni',text:'Serve a capire la direzione più ampia. Un buon 24h dentro un 7g debole può essere solo un rimbalzo.'},
+    {title:'Volume',text:'Un movimento sostenuto da scambi attivi è più credibile di uno con volume debole. Per questo il volume può bloccare una conferma.'},
+    {title:'Forza rispetto a BTC',text:'Confronta la crypto con Bitcoin. Se la crypto sale più di BTC, mostra forza relativa; se resta indietro, il segnale è meno convincente.'},
+    {title:'Estensione',text:'Una crypto può essere forte ma già troppo salita. In quel caso il rischio è rincorrere il prezzo: NON ENTRARE ORA non significa smettere di seguirla.'},
+    {title:'Setup confermato',text:'Nella Watchlist richiede segnali coerenti per più scansioni. È un candidato da approfondire, non un ordine automatico.'},
+    {title:'Massimo P/L e ritracciamento',text:'Per una posizione aperta conta non solo il profitto attuale, ma anche quanto ha restituito rispetto al massimo raggiunto durante la challenge.'},
+    {title:'Semaforo posizione',text:'MANTIENI, IN PROFITTO, CONTROLLA PROFITTO, VALUTA PRESA PROFITTO e ATTENZIONE combinano P/L, trend, forza vs BTC e ritracciamento.'},
+    {title:'Cosa sarebbe successo?',text:'Salva un segnale senza comprare e controlla dopo 24h/48h. Serve per misurare il metodo senza rischiare soldi ogni volta.'}
   ];
+
+  function trainingEntryCandidate(){
+    const assets=watchAssets();
+    const rank={'SETUP CONFERMATO':5,'ATTENDI CONFERMA':4,'OSSERVA':3,'NON ENTRARE ORA':2,'SCARTA':1};
+    const rows=assets.map(a=>{const m=market[a.id]||state.marketCache?.data?.[a.id]||{};return {a,m,st:watchlistDecision(a,m)};})
+      .filter(x=>num(x.m.current_price)>0)
+      .sort((x,y)=>(rank[y.st.label]||0)-(rank[x.st.label]||0)||num(y.m.price_change_percentage_24h_in_currency)-num(x.m.price_change_percentage_24h_in_currency));
+    return rows[0]||null;
+  }
+  function trainingExitCandidate(){
+    const snap=portfolioSnapshot();
+    const rank={'ATTENZIONE':6,'VALUTA PRESA PROFITTO':5,'CONTROLLA PROFITTO':4,'IN PROFITTO':3,'MANTIENI':2};
+    const rows=snap.positions.map(p=>{const m=market[p.id]||state.marketCache?.data?.[p.id]||{};return {p,m,st:positionDecision(p,m)};})
+      .filter(x=>num(x.m.current_price)>0)
+      .sort((x,y)=>(rank[y.st.label]||0)-(rank[x.st.label]||0)||Math.abs(positionPnlPct(y.p))-Math.abs(positionPnlPct(x.p)));
+    return rows[0]||null;
+  }
+  function trainingProgress(){
+    const attempts=Array.isArray(state.training?.attempts)?state.training.attempts:[];
+    const entry=attempts.filter(x=>x.mode==='entry').length;
+    const exit=attempts.filter(x=>x.mode==='exit').length;
+    const lessons=Object.keys(state.training?.seenLessons||{}).length;
+    return {attempts,entry,exit,lessons};
+  }
+  function trainingOption(label,selected=''){
+    return `<button type="button" class="training-choice ${selected===label?'selected':''}" data-training-choice="${esc(label)}">${esc(label)}</button>`;
+  }
+  function trainingScenarioHTML(mode,{today=false}={}){
+    if(mode==='entry'){
+      const row=trainingEntryCandidate();
+      if(!row) return `<div class="training-empty"><b>Nessun candidato in Watchlist.</b><span>Quando scegli una proposta del Radar e la metti in Watchlist, qui potrai allenarti a interpretarla prima di guardare il semaforo.</span></div>`;
+      const {a,m}=row; const btc=market.bitcoin||{}; const rel=num(m.price_change_percentage_24h_in_currency)-num(btc.price_change_percentage_24h_in_currency); const cap=num(m.market_cap),vol=num(m.total_volume),vr=cap>0?vol/cap*100:null;
+      return `<article class="training-scenario" data-training-mode="entry" data-training-id="${esc(a.id)}" data-training-symbol="${esc(a.symbol)}">
+        <div class="training-scenario-top"><div><div class="lesson-tag">${today?'ALLENAMENTO DI OGGI':'ENTRATA · WATCHLIST'}</div><h3>${esc(a.symbol)} · ${esc(a.name)}</h3></div><span class="training-hidden-verdict">verdetto nascosto</span></div>
+        <p class="training-question">Con questi dati, come la leggeresti adesso?</p>
+        <div class="training-metrics"><div><span>1h</span><b>${fmtPct(m.price_change_percentage_1h_in_currency)}</b></div><div><span>24h</span><b>${fmtPct(m.price_change_percentage_24h_in_currency)}</b></div><div><span>7g</span><b>${fmtPct(m.price_change_percentage_7d_in_currency)}</b></div><div><span>vs BTC</span><b>${fmtPct(rel)}</b></div><div><span>Volume/cap</span><b>${vr==null?'—':vr.toFixed(1)+'%'}</b></div><div><span>Prezzo</span><b>${fmtPrice(num(m.current_price))}</b></div></div>
+        <div class="training-choices">${['OSSERVA','ATTENDI CONFERMA','SETUP CONFERMATO','NON ENTRARE ORA','SCARTA'].map(x=>trainingOption(x)).join('')}</div>
+        <button type="button" class="primary-btn training-reveal" data-training-reveal>Mostra lettura</button>
+        <div class="training-feedback" hidden></div>
+      </article>`;
+    }
+    const row=trainingExitCandidate();
+    if(!row) return `<div class="training-empty"><b>Nessuna posizione aperta.</b><span>Quando registri un acquisto nella challenge, qui potrai allenarti a gestire la posizione.</span></div>`;
+    const {p,m,st}=row; const pct=positionPnlPct(p); const peak=getPositionPeak(p); const btc=market.bitcoin||{}; const rel=num(m.price_change_percentage_24h_in_currency)-num(btc.price_change_percentage_24h_in_currency);
+    return `<article class="training-scenario" data-training-mode="exit" data-training-id="${esc(p.id||p.symbol)}" data-training-symbol="${esc(p.symbol)}" data-training-account="${esc(p.account)}">
+      <div class="training-scenario-top"><div><div class="lesson-tag">${today?'ALLENAMENTO DI OGGI':'USCITA · POSIZIONE'}</div><h3>${esc(p.symbol)} · ${esc(p.name||p.symbol)}</h3></div><span class="training-hidden-verdict">verdetto nascosto</span></div>
+      <p class="training-question">La posizione è aperta: cosa faresti guardando solo questi numeri?</p>
+      <div class="training-metrics"><div><span>P/L</span><b>${fmtPct(pct)}</b></div><div><span>24h</span><b>${fmtPct(m.price_change_percentage_24h_in_currency)}</b></div><div><span>7g</span><b>${fmtPct(m.price_change_percentage_7d_in_currency)}</b></div><div><span>vs BTC</span><b>${fmtPct(rel)}</b></div><div><span>Max P/L</span><b>${fmtPct(peak.peakPct)}</b></div><div><span>Dal max</span><b>−${peak.pullback.toFixed(1)} pt</b></div></div>
+      <div class="training-choices">${['MANTIENI','IN PROFITTO','CONTROLLA PROFITTO','VALUTA PRESA PROFITTO','ATTENZIONE'].map(x=>trainingOption(x)).join('')}</div>
+      <button type="button" class="primary-btn training-reveal" data-training-reveal>Mostra lettura</button>
+      <div class="training-feedback" hidden></div>
+    </article>`;
+  }
+  function trainingExpected(scenario){
+    const mode=scenario.dataset.trainingMode;
+    const symbol=scenario.dataset.trainingSymbol;
+    if(mode==='entry'){
+      const a=assetById(scenario.dataset.trainingId)||assetBySymbol(symbol); if(!a) return null;
+      const m=market[a.id]||state.marketCache?.data?.[a.id]||{}; return {st:watchlistDecision(a,m),title:`${a.symbol} · ${a.name}`};
+    }
+    const snap=portfolioSnapshot();
+    const p=snap.positions.find(x=>x.symbol===symbol&&(!scenario.dataset.trainingAccount||x.account===scenario.dataset.trainingAccount)); if(!p) return null;
+    const m=market[p.id]||state.marketCache?.data?.[p.id]||{}; return {st:positionDecision(p,m),title:`${p.symbol} · ${p.name||p.symbol}`};
+  }
+  function trainingFeedbackHTML(selected,expected){
+    const st=expected.st; const same=selected===st.label;
+    return `<div class="training-feedback-head"><span class="status-pill ${esc(st.tone)}">${esc(st.label)}</span><b>${same?'La tua lettura coincide con l’app':'Confronta la tua lettura con l’app'}</b></div><p><b>Perché:</b> ${esc(st.reason)}</p>${decisionChecksHTML(st.checks||[])}<small>Il semaforo è una lettura dei dati, non una certezza né un ordine di acquisto/vendita.</small>`;
+  }
+  function trainingHistoryCard(sig){
+    const stateSig=signalState(sig); const o=sig.outcome48||sig.outcome24; const p=o?num(o.pct):null;
+    let lesson='Il setup è ancora in verifica: aspettiamo il dato reale prima di giudicarlo.';
+    if(p!=null&&p>=2) lesson='Il segnale ha avuto seguito. Conta la combinazione dei fattori, non un singolo indicatore.';
+    else if(p!=null&&p<=-2) lesson='Il segnale non ha avuto seguito: anche un setup coerente resta una probabilità, non una certezza.';
+    else if(p!=null) lesson='Movimento contenuto: un buon setup può anche non partire subito.';
+    return `<details class="training-history-card"><summary><div><b>${esc(sig.symbol||sig.id||'Segnale')}</b><span>${fmtDate(new Date(num(sig.time)))}</span></div><span class="status-pill ${esc(stateSig.tone)}">${esc(stateSig.label)}</span></summary><div class="training-history-body"><p><b>Cosa avevamo visto:</b> ${esc(humanSignalExplanation(sig))}</p><p><b>Cosa è successo:</b> ${esc(signalOutcomeSentence(sig.outcome24,'24h'))} · ${esc(signalOutcomeSentence(sig.outcome48,'48h'))}</p><p><b>Lezione:</b> ${esc(lesson)}</p></div></details>`;
+  }
   function renderSchool(){
+    state.training=state.training||{seenLessons:{},attempts:[]};
+    const progress=trainingProgress();
+    const tab=state.ui?.trainingTab||'entries';
+    const todayMode=trainingEntryCandidate()?'entry':'exit';
+    const signals=[...(state.opportunity?.signals||[])].sort((a,b)=>num(b.time)-num(a.time)).slice(0,12);
+    let panel='';
+    if(tab==='basics'){
+      panel=`<div class="training-lessons">${TRAINING_LESSONS.map((l,i)=>`<details class="training-lesson" data-training-lesson="${i}"><summary><span>${state.training.seenLessons?.[i]?'✓':'○'}</span><b>${esc(l.title)}</b></summary><p>${esc(l.text)}</p></details>`).join('')}</div>`;
+    }else if(tab==='entries') panel=trainingScenarioHTML('entry');
+    else if(tab==='exits') panel=trainingScenarioHTML('exit');
+    else panel=`<div class="training-history"><p class="muted small">Segnali reali salvati dal Radar. Qui non si valuta quanto hai guadagnato: si controlla se la lettura iniziale aveva senso.</p>${signals.length?signals.map(trainingHistoryCard).join(''):'<div class="training-empty"><b>Nessun segnale salvato.</b><span>Quando il Radar registra segnali, compariranno qui con il confronto 24h/48h.</span></div>'}</div>`;
     $('#view-school').innerHTML=`
-      <div class="section-title"><div><h2>Scuola</h2><p>Concetti pratici collegati a quello che vedi nell’app</p></div></div>
-      <div class="lesson-list">${LESSONS.map((l,i)=>`<article class="lesson-card"><div class="lesson-tag">Lezione ${i+1}</div><h3>${esc(l[0])}</h3><p>${esc(l[1])}</p></article>`).join('')}</div>
+      <div class="section-title"><div><h2>Training</h2><p>Impara a leggere gli stessi segnali usati da Crypto Conte</p></div></div>
+      <div class="training-progress"><div><span>Hai già visto</span><b>${progress.lessons} basi · ${progress.entry} entrate · ${progress.exit} uscite</b></div><small>Niente punteggi: conta capire il perché.</small></div>
+      ${trainingScenarioHTML(todayMode,{today:true})}
+      <div class="training-tabs"><button class="training-tab ${tab==='basics'?'active':''}" data-training-tab="basics">Basi</button><button class="training-tab ${tab==='entries'?'active':''}" data-training-tab="entries">Entrate</button><button class="training-tab ${tab==='exits'?'active':''}" data-training-tab="exits">Uscite</button><button class="training-tab ${tab==='history'?'active':''}" data-training-tab="history">Storico</button></div>
+      <div class="training-panel">${panel}</div>
     `;
   }
 
@@ -1031,6 +1118,23 @@
     $$('[data-action="restore-safety"]').forEach(b=>b.addEventListener('click',restoreCheckpoint));
     $$('[data-action="new-challenge"]').forEach(b=>b.addEventListener('click',openChallengeSheet));
     $$('[data-action="reset"]').forEach(b=>b.addEventListener('click',resetState));
+    $$('[data-training-tab]').forEach(b=>b.addEventListener('click',()=>{state.ui={...(state.ui||{}),trainingTab:b.dataset.trainingTab};saveState();renderAll();window.scrollTo({top:0,behavior:'smooth'});}));
+    $$('.training-scenario').forEach(card=>{
+      card.querySelectorAll('[data-training-choice]').forEach(btn=>btn.addEventListener('click',()=>{card.querySelectorAll('[data-training-choice]').forEach(x=>x.classList.toggle('selected',x===btn));card.dataset.selected=btn.dataset.trainingChoice;}));
+      const reveal=card.querySelector('[data-training-reveal]');
+      if(reveal) reveal.addEventListener('click',()=>{
+        const selected=card.dataset.selected;
+        if(!selected){toast('Scegli prima la tua lettura');return;}
+        const expected=trainingExpected(card); if(!expected){toast('Scenario non più disponibile');return;}
+        const feedback=card.querySelector('.training-feedback'); feedback.innerHTML=trainingFeedbackHTML(selected,expected); feedback.hidden=false;
+        card.querySelector('.training-hidden-verdict')?.classList.add('revealed');
+        if(!card.dataset.revealed){
+          state.training=state.training||{seenLessons:{},attempts:[]}; state.training.attempts=Array.isArray(state.training.attempts)?state.training.attempts:[];
+          state.training.attempts.push({time:Date.now(),mode:card.dataset.trainingMode,symbol:card.dataset.trainingSymbol,choice:selected,expected:expected.st.label}); state.training.attempts=state.training.attempts.slice(-80); saveState(); card.dataset.revealed='1';
+        }
+      });
+    });
+    $$('.training-lesson').forEach(d=>d.addEventListener('toggle',()=>{if(!d.open)return; state.training=state.training||{seenLessons:{},attempts:[]}; state.training.seenLessons=state.training.seenLessons||{}; state.training.seenLessons[d.dataset.trainingLesson]=true; saveState(); const mark=d.querySelector('summary span'); if(mark) mark.textContent='✓';}));
   }
 
   function showView(name){

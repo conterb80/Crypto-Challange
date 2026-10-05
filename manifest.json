@@ -2,7 +2,7 @@
   "id": "./",
   "name": "Crypto Conte",
   "short_name": "Crypto Conte",
-  "description": "Crypto Conte - Challenge 150: portafoglio, semafori decisionali, Proposte Radar separate dalla Watchlist e archivio challenge.",
+  "description": "Crypto Conte - Challenge 150: portafoglio, Radar separato, semafori decisionali e Training pratico su entrate e uscite.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

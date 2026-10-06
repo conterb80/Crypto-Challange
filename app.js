@@ -1,17 +1,43 @@
 (() => {
   'use strict';
 
-  const VERSION = '2.8.3';
+  const VERSION = '2.9.0';
   const STORAGE_KEY = 'cryptoConte.v2.state';
   const MARKET_TTL = 4 * 60 * 1000;
   const AUTO_REFRESH_MS = 5 * 60 * 1000;
-  const OPPORTUNITY_TTL = 15 * 60 * 1000;
-  const AUTO_CONFIRM_MIN_MS = 10 * 60 * 1000;
+  const OPPORTUNITY_TTL = 5 * 60 * 1000;
+  const AUTO_CONFIRM_MIN_MS = 8 * 60 * 1000;
   const MARKET_STALE_MS = 15 * 60 * 1000;
   const API_TIMEOUT_MS = 12000;
   const TRENDING_TTL = 60 * 60 * 1000;
   const SAFETY_KEY = 'cryptoConte.v2.safety';
   const STABLE_SYMBOLS = new Set(['USDT','USDC','DAI','FDUSD','USDE','USDS','PYUSD','TUSD','USDD','FRAX','EURC','EURT','RLUSD']);
+
+  // RC9 · Universo operativo Revolut conservativo.
+  // È derivato dall'elenco pubblico Revolut Italia (documentazione MiCA/impatti ambientali)
+  // e viene usato PRIMA del motore decisionale. Gli asset fuori da questo universo
+  // non possono diventare candidati operativi. Eventuali eccezioni dell'account possono
+  // essere bloccate con un tap e restano salvate localmente.
+  const REVOLUT_RULES = {
+    BTC:['bitcoin'], ETH:['ethereum'], BNB:['bnb','bnb chain'], SOL:['solana'], XRP:['xrp'], DOGE:['dogecoin'], TRX:['tron'],
+    ADA:['cardano'], AVAX:['avalanche'], SHIB:['shiba inu'], LINK:['chainlink'], BCH:['bitcoin cash'], DOT:['polkadot'], LTC:['litecoin'],
+    NEAR:['near protocol','near'], UNI:['uniswap'], ICP:['internet computer'], PEPE:['pepe'], APT:['aptos'], TON:['toncoin'], FET:['artificial superintelligence alliance'],
+    XLM:['stellar'], ETC:['ethereum classic'], STX:['stacks'], SUI:['sui'], CRO:['cronos'], FIL:['filecoin'], AAVE:['aave'], IMX:['immutable'],
+    RENDER:['render'], HBAR:['hedera'], ARB:['arbitrum'], VET:['vechain'], INJ:['injective'], OP:['optimism'], ATOM:['cosmos'], WIF:['dogwifhat'],
+    GRT:['the graph'], HNT:['helium'], BONK:['bonk'], FLOKI:['floki'], ALGO:['algorand'], JUP:['jupiter','jupiter project'], PYTH:['pyth network'],
+    LDO:['lido dao'], TIA:['celestia'], JASMY:['jasmycoin'], SEI:['sei'], FLOW:['flow'], ONDO:['ondo'], QNT:['quant'], EGLD:['multiversx'],
+    ENA:['ethena'], LPT:['livepeer'], COMP:['compound'], ROSE:['oasis'], APE:['apecoin'], ZRO:['layerzero'], CRV:['curve dao'], IOTX:['iotex'],
+    KAVA:['kava'], MOG:['mog coin'], SUPER:['superverse'], '1INCH':['1inch'], AMP:['amp'], DASH:['dash'], BLUR:['blur'], BAND:['band protocol'],
+    TRB:['tellor tributes','tellor'], VTHO:['vethor'], SUSHI:['sushi'], POL:['polygon'], MATIC:['polygon'], ACH:['alchemy pay'], COTI:['coti'],
+    STORJ:['storj'], QI:['benqi'], ALICE:['my neighbor alice'], PNG:['pangolin'], LMWR:['limewire'], HFT:['hashflow'], BNT:['bancor network'],
+    AGLD:['adventure gold'], GODS:['gods unchained'], ALCX:['alchemix'], FARM:['harvest finance'], VOXEL:['voxies'], MDT:['measurable data token'],
+    GST:['stepn green satoshi token on solana','green satoshi token'], POLS:['polkastarter'], BENJI:['basenji'], AST:['airswap'], SHPING:['shping'],
+    SWFTC:['swftcoin'], SUKU:['suku'], OCEAN:['ocean protocol'], COW:['cow protocol'], ALEO:['aleo'], DRIFT:['drift protocol'], L3:['layer3'],
+    RED:['redstone'], PRCL:['parcl'], ALEPH:['aleph.im'], STG:['stargate finance'], PENDLE:['pendle'], ZK:['zksync'], PENGU:['pudgy penguins'],
+    HYPE:['hyperliquid'], WLFI:['world liberty financial'], SPX:['spx6900'], TRUMP:['official trump'], MEW:['cat in a dogs world'], WLD:['worldcoin'], SAND:['the sandbox','sandbox'],
+    POPCAT:['popcat'], AKT:['akash network'], ENS:['ethereum name service'], DYDX:['dydx'], MORPHO:['morpho'], PNUT:['peanut the squirrel'], PRIME:['echelon prime']
+  };
+  const REVOLUT_SYMBOLS = new Set(Object.keys(REVOLUT_RULES));
   const NOW_ISO_LOCAL = () => {
     const d = new Date();
     const z = n => String(n).padStart(2,'0');
@@ -93,6 +119,7 @@
     challengeArchives: [],
     training: {seenLessons:{},attempts:[]},
     assistant: {time:0,source:'',fresh:false,items:[],log:[],lastStatus:{}},
+    platform: {unavailableSymbols:[],confirmedSymbols:[]},
     ui: {lastView:'home',radarTab:'proposals',trainingTab:'entries',assistantTab:'auto'}
   });
 
@@ -242,7 +269,7 @@
       if(!raw) return defaultState();
       const saved = JSON.parse(raw);
       const base = defaultState();
-      const merged = {...base,...saved,ui:{...base.ui,...(saved.ui||{})},training:{...base.training,...(saved.training||{}),seenLessons:{...(base.training.seenLessons||{}),...(saved.training?.seenLessons||{})},attempts:Array.isArray(saved.training?.attempts)?saved.training.attempts:[]},assistant:{...base.assistant,...(saved.assistant||{}),items:Array.isArray(saved.assistant?.items)?saved.assistant.items:[],log:Array.isArray(saved.assistant?.log)?saved.assistant.log:[],lastStatus:{...(base.assistant.lastStatus||{}),...(saved.assistant?.lastStatus||{})}},marketCache:saved.marketCache||base.marketCache,opportunity:{...base.opportunity,...(saved.opportunity||{})},decision:{...base.decision,...(saved.decision||{}),peaks:{...(base.decision.peaks||{}),...(saved.decision?.peaks||{})},samples:{...(base.decision.samples||{}),...(saved.decision?.samples||{})}}};
+      const merged = {...base,...saved,ui:{...base.ui,...(saved.ui||{})},training:{...base.training,...(saved.training||{}),seenLessons:{...(base.training.seenLessons||{}),...(saved.training?.seenLessons||{})},attempts:Array.isArray(saved.training?.attempts)?saved.training.attempts:[]},assistant:{...base.assistant,...(saved.assistant||{}),items:Array.isArray(saved.assistant?.items)?saved.assistant.items:[],log:Array.isArray(saved.assistant?.log)?saved.assistant.log:[],lastStatus:{...(base.assistant.lastStatus||{}),...(saved.assistant?.lastStatus||{})}},platform:{...base.platform,...(saved.platform||{}),unavailableSymbols:Array.isArray(saved.platform?.unavailableSymbols)?saved.platform.unavailableSymbols:[],confirmedSymbols:Array.isArray(saved.platform?.confirmedSymbols)?saved.platform.confirmedSymbols:[]},marketCache:saved.marketCache||base.marketCache,opportunity:{...base.opportunity,...(saved.opportunity||{})},decision:{...base.decision,...(saved.decision||{}),peaks:{...(base.decision.peaks||{}),...(saved.decision?.peaks||{})},samples:{...(base.decision.samples||{}),...(saved.decision?.samples||{})}}};
       if(!Array.isArray(saved.watchlistIds)){
         merged.watchlistIds=(saved.watchlist||[]).map(sym=>CATALOG.find(a=>a.symbol===String(sym).toUpperCase())?.id).filter(Boolean);
       }
@@ -618,8 +645,26 @@
     if(base.label==='PREPARATI') return {...base,label:'ATTENDI CONFERMA',tone:'prepare',reason:'Sta migliorando, ma manca ancora una conferma netta e persistente.'};
     return {...base,label:'OSSERVA',tone:'observe',reason:'Resta in Watchlist, ma al momento non c’è un setup abbastanza pulito da mettere in cima alle priorità.'};
   }
-  // RC8.3 · Radar decisionale: il Radar segue i candidati da solo.
-  // La Watchlist resta personale e non è più necessaria per ottenere una conferma.
+  // RC9 · Motore operativo: prima filtra l'universo realmente utilizzabile,
+  // poi assegna un punteggio unico e segue automaticamente solo i setup migliori.
+  function normalizedAssetName(v){
+    return String(v||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
+  }
+
+  function revolutEligibility(x){
+    const symbol=String(x?.symbol||'').toUpperCase();
+    const name=normalizedAssetName(x?.name);
+    const unavailable=new Set((state.platform?.unavailableSymbols||[]).map(v=>String(v).toUpperCase()));
+    const confirmed=new Set((state.platform?.confirmedSymbols||[]).map(v=>String(v).toUpperCase()));
+    if(unavailable.has(symbol)) return {ok:false,source:'bloccato',reason:'segnalata come non disponibile nel tuo Revolut'};
+    const bought=(state.ops||[]).some(op=>op?.type==='BUY'&&String(op.symbol||'').toUpperCase()===symbol);
+    if(bought||confirmed.has(symbol)) return {ok:true,source:'confermato',reason:'disponibilità già confermata dalla tua challenge'};
+    const aliases=REVOLUT_RULES[symbol]||[];
+    const nameOk=aliases.some(a=>{const n=normalizedAssetName(a);return name===n||name.includes(n)||n.includes(name);});
+    if(REVOLUT_SYMBOLS.has(symbol)&&nameOk) return {ok:true,source:'catalogo',reason:'presente nell’universo pubblico Revolut usato dall’app'};
+    return {ok:false,source:'fuori-universo',reason:'non presente nell’universo Revolut conservativo dell’app'};
+  }
+
   function isExcludedRadarAsset(x){
     const symbol=String(x?.symbol||'').toUpperCase();
     const name=String(x?.name||'').toLowerCase();
@@ -628,25 +673,69 @@
     return blocked.some(k=>name.includes(k));
   }
 
-  function autoEntryGate(c,btcOverride=null){
+  function operationalScore(c,btcOverride=null,prev=null){
     const btc=btcOverride||market.bitcoin||{};
-    const base=watchDecision(c,btc);
     const h=num(c?.price_change_percentage_1h_in_currency),d=num(c?.price_change_percentage_24h_in_currency),w=num(c?.price_change_percentage_7d_in_currency);
     const rel=d-num(btc?.price_change_percentage_24h_in_currency);
-    const cap=num(c?.market_cap),vol=num(c?.total_volume),volRatio=cap>0?vol/cap:null;
-    const excluded=isExcludedRadarAsset(c);
-    const reqs=[
-      {key:'momentum',label:'momentum',ok:h>=0.20&&h<=3.5&&d>=1.5&&d<=8},
-      {key:'relative',label:'forza vs BTC',ok:rel>=1},
-      {key:'trend',label:'trend 7g',ok:w>=3&&w<30},
-      {key:'volume',label:'volume',ok:volRatio!=null&&volRatio>=.10},
-      {key:'extension',label:'estensione',ok:!base.tooFast},
-      {key:'asset',label:'tipo asset',ok:!excluded}
+    const cap=num(c?.market_cap),vol=num(c?.total_volume),volRatio=cap>0?vol/cap:0;
+    const scanMove=c?.scanMove!=null&&Number.isFinite(Number(c.scanMove))?Number(c.scanMove):(prev?.price>0?pctChange(prev.price,num(c?.current_price)):null);
+    const volDelta=c?.volDelta!=null&&Number.isFinite(Number(c.volDelta))?Number(c.volDelta):(prev?.volume>0?(vol/prev.volume-1)*100:null);
+    const platform=revolutEligibility(c);
+    const structuralExcluded=isExcludedRadarAsset(c);
+    const tooFast=h>3.5||d>10||w>30||(d>8&&h>2.5);
+
+    const c24=d>=1.2&&d<=7.5?20:d>=.5&&d<1.2?13:d>7.5&&d<=10?14:d>0&&d<.5?6:0;
+    const c1h=h>=.15&&h<=2.2?10:h>=0&&h<.15?6:h>2.2&&h<=3.5?6:h>=-.5&&h<0?3:0;
+    const cRel=rel>=2.5?20:rel>=1?16:rel>=.3?10:rel>=0?5:0;
+    const c7=w>=2&&w<=18?15:w>=0&&w<2?10:w>=-2&&w<0?5:w>18&&w<=28?10:0;
+    const cVol=volRatio>=.15?15:volRatio>=.08?12:volRatio>=.04?8:volRatio>=.02?4:0;
+    const cLiq=vol>=50_000_000?10:vol>=15_000_000?8:vol>=5_000_000?5:vol>=2_000_000?2:0;
+    let cScan=0;
+    if(scanMove!=null){ if(scanMove>=.05&&scanMove<=1.5)cScan+=5; else if(scanMove>=-.25&&scanMove<.05)cScan+=2; }
+    if(volDelta!=null){ if(volDelta>=5)cScan+=5; else if(volDelta>=0)cScan+=2; }
+    let score=c24+c1h+cRel+c7+cVol+cLiq+cScan;
+    if(tooFast) score-=18;
+    if(d<0) score-=8;
+    if(rel<0) score-=8;
+    if(h<-1) score-=6;
+    score=Math.max(0,Math.min(100,Math.round(score)));
+
+    const hardEntry=platform.ok&&!structuralExcluded&&!tooFast&&d>=.6&&d<=10&&h>=-.25&&h<=3.5&&rel>=.3&&w>=-2&&w<=30&&volRatio>=.04&&vol>=5_000_000;
+    const readyNow=hardEntry&&score>=72;
+    const promising=platform.ok&&!structuralExcluded&&!tooFast&&score>=58&&d>-1&&rel>-1&&vol>=2_000_000;
+    const weaknesses=[];
+    if(!platform.ok) weaknesses.push('disponibilità Revolut');
+    if(structuralExcluded) weaknesses.push('tipo asset');
+    if(tooFast) weaknesses.push('prezzo troppo esteso');
+    if(d<.6) weaknesses.push('momentum 24h');
+    if(h<-.25) weaknesses.push('momentum 1h');
+    if(rel<.3) weaknesses.push('forza vs BTC');
+    if(w<-2) weaknesses.push('trend 7g');
+    if(volRatio<.04) weaknesses.push('volume');
+    if(vol<5_000_000) weaknesses.push('liquidità');
+    if(score<72&&!weaknesses.length) weaknesses.push('qualità complessiva');
+    const strengths=[];
+    if(d>=1.2&&d<=7.5) strengths.push(`momentum 24h ${fmtPct(d)}`);
+    if(rel>=1) strengths.push(`forza vs BTC ${fmtPct(rel)}`);
+    if(w>=2&&w<=18) strengths.push(`trend 7g ${fmtPct(w)}`);
+    if(volRatio>=.08) strengths.push('volume attivo');
+    if(scanMove!=null&&scanMove>=.05&&scanMove<=1.5) strengths.push(`accelerazione ${fmtPct(scanMove)}`);
+    const risk=tooFast||d>=8||w>=24?'ELEVATO':cap>=1_000_000_000&&d<=5&&w<=15?'PIÙ CONTENUTO':'MEDIO';
+    const invalidation='ritira il segnale se il 24h perde +0,5%, la forza vs BTC torna sotto 0 o il momentum 1h scende sotto −1%';
+    return {score,h,d,w,rel,cap,vol,volRatio,scanMove,volDelta,platform,structuralExcluded,tooFast,hardEntry,readyNow,promising,weaknesses,strengths,risk,invalidation};
+  }
+
+  function autoEntryGate(c,btcOverride=null){
+    const q=operationalScore(c,btcOverride,state.opportunity?.prev?.[c?.id]);
+    const checks=[
+      {label:`Score ${q.score}/100`,state:q.score>=72?'good':q.score>=58?'neutral':'bad'},
+      {label:`24h ${fmtPct(q.d)}`,state:mark(q.d,.6,-1)},
+      {label:`vs BTC ${fmtPct(q.rel)}`,state:mark(q.rel,.3,-.5)},
+      {label:`Trend 7g ${fmtPct(q.w)}`,state:mark(q.w,2,-2)},
+      {label:'Volume',state:q.volRatio>=.08?'good':q.volRatio>=.04?'neutral':'bad'},
+      {label:'Revolut',state:q.platform.ok?'good':'bad'}
     ];
-    const missing=reqs.filter(r=>!r.ok);
-    const readyNow=base.label==='POSSIBILE INGRESSO'&&missing.length===0;
-    const promising=!excluded&&!base.tooFast&&d>0&&rel>0&&(base.label==='POSSIBILE INGRESSO'||base.label==='PREPARATI');
-    return {...base,h,d,w,rel,volRatio,excluded,reqs,missing,readyNow,promising};
+    return {...q,label:q.readyNow?'PRONTO':q.promising?'DA SEGUIRE':'FUORI',tone:q.readyNow?'ready':q.promising?'prepare':'observe',checks,missing:q.weaknesses.map(label=>({label})),excluded:q.structuralExcluded||!q.platform.ok};
   }
 
   function updateAutoCandidateTracking(pool,previousTrack={}){
@@ -657,27 +746,22 @@
       if(!gate.promising&&!gate.readyNow) return;
       const prev=previousTrack?.[c.id]||{};
       const enoughGap=!prev.lastSample||now-num(prev.lastSample)>=AUTO_CONFIRM_MIN_MS;
-      let streak=num(prev.streak);
-      let lastSample=num(prev.lastSample)||0;
+      let streak=num(prev.streak), lastSample=num(prev.lastSample)||0;
       if(gate.readyNow){
-        if(!prev.readyNow){ streak=1; lastSample=now; }
-        else if(enoughGap){ streak=Math.min(9,Math.max(1,streak)+1); lastSample=now; }
+        if(!prev.readyNow){streak=1;lastSample=now;}
+        else if(enoughGap){streak=Math.min(9,Math.max(1,streak)+1);lastSample=now;}
         else streak=Math.max(1,streak);
       }else{
         streak=0;
         if(enoughGap) lastSample=now;
       }
-      next[c.id]={
-        id:c.id,symbol:String(c.symbol||'').toUpperCase(),name:c.name||c.symbol,
-        firstSeen:num(prev.firstSeen)||now,lastSeen:now,lastSample,seenCount:num(prev.seenCount)+1,
-        streak,readyNow:gate.readyNow,lastBase:gate.label,score:num(c.score),missing:gate.missing.map(x=>x.label)
-      };
+      next[c.id]={id:c.id,symbol:String(c.symbol||'').toUpperCase(),name:c.name||c.symbol,firstSeen:num(prev.firstSeen)||now,lastSeen:now,lastSample,seenCount:num(prev.seenCount)+1,streak,readyNow:gate.readyNow,score:gate.score,bestScore:Math.max(num(prev.bestScore),gate.score),missing:gate.weaknesses.slice(0,3),risk:gate.risk};
     });
     return next;
   }
 
   function missingSentence(gate){
-    const missing=(gate?.missing||[]).map(x=>x.label);
+    const missing=gate?.weaknesses||gate?.missing?.map(x=>x.label)||[];
     if(!missing.length) return 'manca solo la conferma temporale';
     if(missing.length===1) return `manca ${missing[0]}`;
     return `mancano ${missing.slice(0,2).join(' e ')}`;
@@ -686,26 +770,27 @@
   function autoCandidateDecision(c,trackMap=null){
     const gate=autoEntryGate(c);
     const rec=(trackMap||state.opportunity?.autoTrack||{})?.[c?.id]||{};
-    if(gate.excluded) return {...gate,label:'ESCLUSO',tone:'stop',reason:'Prodotto tokenizzato/derivato o non adatto al Radar crypto della challenge.',streak:0};
-    if(gate.readyNow&&num(rec.streak)>=2) return {...gate,label:'ENTRA',tone:'ready',reason:`Tutti i requisiti sono verdi e sono rimasti coerenti per ${num(rec.streak)} scansioni distanziate nel tempo. È il candidato operativo principale.`,streak:num(rec.streak)};
-    if(gate.readyNow) return {...gate,label:'ATTENDI',tone:'prepare',reason:`Tutti i requisiti sono verdi, ma serve ancora la seconda conferma temporale (${Math.max(1,num(rec.streak))}/2).`,streak:Math.max(1,num(rec.streak))};
-    if(gate.promising) return {...gate,label:'ATTENDI',tone:'prepare',reason:`Il candidato resta valido, ma ${missingSentence(gate)}. L'app continua a seguirlo da sola.`,streak:num(rec.streak)};
-    return {...gate,label:'NESSUN INGRESSO',tone:'observe',reason:'Non soddisfa più i requisiti operativi: esce automaticamente dalla lista del Radar.',streak:0};
+    if(!gate.platform.ok) return {...gate,label:'ESCLUSO',tone:'stop',reason:`Fuori dall’universo operativo: ${gate.platform.reason}.`,streak:0};
+    if(gate.structuralExcluded) return {...gate,label:'ESCLUSO',tone:'stop',reason:'Tipo di prodotto non adatto al Radar crypto della challenge.',streak:0};
+    if(gate.readyNow&&num(rec.streak)>=2) return {...gate,label:'ENTRA',tone:'ready',reason:`Score ${gate.score}/100. ${gate.strengths.slice(0,3).join(' · ')||'setup coerente'}. Due conferme temporali valide: il metodo considera questo il miglior tentativo operativo disponibile.`,streak:num(rec.streak)};
+    if(gate.readyNow) return {...gate,label:'ATTENDI',tone:'prepare',reason:`Score ${gate.score}/100 e requisiti operativi superati. Serve soltanto la seconda conferma temporale (${Math.max(1,num(rec.streak))}/2).`,streak:Math.max(1,num(rec.streak))};
+    if(gate.promising) return {...gate,label:'ATTENDI',tone:'prepare',reason:`Score ${gate.score}/100: ${missingSentence(gate)}. L’app continua a seguirla automaticamente e la elimina se scende sotto soglia.`,streak:num(rec.streak)};
+    return {...gate,label:'NESSUN INGRESSO',tone:'observe',reason:`Score ${gate.score}/100: non supera più la soglia operativa e viene rimossa automaticamente.`,streak:0};
   }
 
   function computeEntryDecision(tracked,trackMap){
     const rows=(tracked||[]).map(c=>({c,st:autoCandidateDecision(c,trackMap)})).filter(x=>x.st.label!=='ESCLUSO'&&x.st.label!=='NESSUN INGRESSO');
-    const ready=rows.filter(x=>x.st.label==='ENTRA').sort((a,b)=>num(b.st.streak)-num(a.st.streak)||num(b.c.score)-num(a.c.score)||num(b.c.rel24)-num(a.c.rel24));
+    const ready=rows.filter(x=>x.st.label==='ENTRA').sort((a,b)=>num(b.st.score)-num(a.st.score)||num(b.st.streak)-num(a.st.streak)||num(b.st.rel)-num(a.st.rel));
     if(ready.length){
       const x=ready[0];
-      return {label:'ENTRA',tone:'ready',candidateId:x.c.id,symbol:x.c.symbol,name:x.c.name,reason:x.st.reason,missing:[],time:Date.now()};
+      return {label:'ENTRA',tone:'ready',candidateId:x.c.id,symbol:x.c.symbol,name:x.c.name,score:x.st.score,risk:x.st.risk,reason:x.st.reason,invalidation:x.st.invalidation,availability:x.st.platform.reason,missing:[],time:Date.now()};
     }
-    const pending=rows.filter(x=>x.st.label==='ATTENDI').sort((a,b)=>Number(b.st.readyNow)-Number(a.st.readyNow)||(a.st.missing?.length||0)-(b.st.missing?.length||0)||num(b.c.score)-num(a.c.score)||num(b.c.rel24)-num(a.c.rel24));
+    const pending=rows.filter(x=>x.st.label==='ATTENDI').sort((a,b)=>Number(b.st.readyNow)-Number(a.st.readyNow)||num(b.st.score)-num(a.st.score)||num(b.st.rel)-num(a.st.rel));
     if(pending.length){
       const x=pending[0];
-      return {label:'ATTENDI',tone:'prepare',candidateId:x.c.id,symbol:x.c.symbol,name:x.c.name,reason:x.st.reason,missing:(x.st.missing||[]).map(r=>r.label),time:Date.now()};
+      return {label:'ATTENDI',tone:'prepare',candidateId:x.c.id,symbol:x.c.symbol,name:x.c.name,score:x.st.score,risk:x.st.risk,reason:x.st.reason,invalidation:x.st.invalidation,availability:x.st.platform.reason,missing:x.st.weaknesses.slice(0,2),time:Date.now()};
     }
-    return {label:'NESSUN INGRESSO',tone:'observe',candidateId:null,symbol:'',name:'',reason:'Nessuna crypto supera in questo momento i requisiti minimi del metodo. Il Radar continua a cercare automaticamente.',missing:[],time:Date.now()};
+    return {label:'NESSUN INGRESSO',tone:'observe',candidateId:null,symbol:'',name:'',score:0,risk:'',reason:'Nessuna crypto dell’universo Revolut supera in questo momento la soglia minima 58/100. Il Radar continua a cercare automaticamente.',invalidation:'',availability:'',missing:[],time:Date.now()};
   }
 
   function currentEntryDecision(){
@@ -728,7 +813,9 @@
 
   function nonOwnedDecision(a,m){
     const merged={...a,...m};
-    if(isExcludedRadarAsset(merged)) return {label:'ESCLUSO DAL RADAR',tone:'stop',reason:'Il Radar crypto esclude automaticamente prodotti tokenizzati/derivati.',checks:watchDecision(m).checks||[]};
+    const platform=revolutEligibility(merged);
+    if(!platform.ok) return {label:'FUORI UNIVERSO REVOLUT',tone:'stop',reason:platform.reason,checks:autoEntryGate(merged).checks||[]};
+    if(isExcludedRadarAsset(merged)) return {label:'ESCLUSO DAL RADAR',tone:'stop',reason:'Il Radar crypto esclude automaticamente prodotti tokenizzati/derivati.',checks:autoEntryGate(merged).checks||[]};
     const tracked=(state.opportunity?.tracked||[]).find(x=>x.id===a.id);
     if(tracked) return autoCandidateDecision({...tracked,...m},state.opportunity?.autoTrack||{});
     if((state.watchlistIds||[]).includes(a.id)) return personalWatchDecision(a,m);
@@ -914,6 +1001,8 @@
         <div class="summary-card ${pnlClass}"><div class="label">Risultato reale</div><div class="big">${fmtEUR(s.result)}</div><div class="sub">${fmtPct(pct)} · valore attuale ${fmtEUR(s.total)}</div></div>
       </div>
 
+      ${entryDecisionHero(isMarketStale())}
+
       ${positionPL}
 
       <div class="market-hero home-btc" data-open-asset="BTC">
@@ -981,19 +1070,21 @@
 
   function radarLookupCard(c){
     if(!c) return '';
-    const excluded=isExcludedRadarAsset(c);
+    const platform=revolutEligibility(c);
+    const structural=isExcludedRadarAsset(c);
     const inAuto=(state.opportunity?.tracked||[]).some(x=>x.id===c.id);
     const inWatch=(state.watchlistIds||[]).includes(c.id);
     const owned=portfolioSnapshot().positions.some(p=>p.id===c.id||String(p.symbol).toUpperCase()===String(c.symbol).toUpperCase());
-    const dec=excluded?{...watchDecision(c),label:'ESCLUSO DAL RADAR',tone:'stop',reason:'Prodotto tokenizzato/derivato: il Radar automatico lo esclude dalla Challenge crypto.'}:inAuto?autoCandidateDecision(c,state.opportunity?.autoTrack||{}):nonOwnedDecision(c,c);
+    const dec=!platform.ok?{...autoEntryGate(c),label:'FUORI UNIVERSO REVOLUT',tone:'stop',reason:platform.reason}:structural?{...autoEntryGate(c),label:'ESCLUSO DAL RADAR',tone:'stop',reason:'Tipo di prodotto escluso dal motore operativo.'}:inAuto?autoCandidateDecision(c,state.opportunity?.autoTrack||{}):nonOwnedDecision(c,c);
     const trend=trendValuesFor(c.id,c,'7d');
-    const where=owned?'GIÀ IN PORTAFOGLIO':excluded?'ESCLUSO DAL RADAR AUTOMATICO':inAuto?'MONITORATO AUTOMATICAMENTE':inWatch?'IN WATCHLIST PERSONALE':'FUORI DAL RADAR ATTUALE';
+    const where=owned?'GIÀ IN PORTAFOGLIO':!platform.ok?'NON OPERATIVA SU REVOLUT':structural?'ESCLUSA DAL MOTORE':inAuto?'MONITORATA AUTOMATICAMENTE':inWatch?'IN WATCHLIST PERSONALE':'FUORI DAL RADAR ATTUALE';
+    const gate=autoEntryGate(c);
     return `<article class="opportunity-card radar-lookup-card" data-open-asset="${esc(c.symbol)}">
       <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${where}</div></div><span class="status-pill ${dec.tone}">${esc(dec.label)}</span></div>
-      <div class="radar-grid"><div class="metric"><span>Prezzo</span><b>${fmtPrice(num(c.current_price))}</b></div><div class="metric"><span>1h</span><b class="${cls(num(c.price_change_percentage_1h_in_currency))}">${fmtPct(c.price_change_percentage_1h_in_currency)}</b></div><div class="metric"><span>24h</span><b class="${cls(num(c.price_change_percentage_24h_in_currency))}">${fmtPct(c.price_change_percentage_24h_in_currency)}</b></div><div class="metric"><span>7g</span><b class="${cls(num(c.price_change_percentage_7d_in_currency))}">${fmtPct(c.price_change_percentage_7d_in_currency)}</b></div></div>
-      <div class="spark">${sparkSVG(trend.values)}</div><div class="trend-caption">${esc(trendCaption(c,trend.mode))}</div>${decisionChecksHTML(dec.checks||[])}
-      <div class="radar-reason"><b>Lettura attuale:</b> ${esc(dec.reason)}<br><b>Nota:</b> se non soddisfa più i filtri, il Radar automatico la elimina da solo dalla lista operativa.</div>
-      ${(!inWatch&&!owned)?`<div class="opportunity-actions"><button data-watch-candidate="${esc(c.id)}">＋ Salva nella Watchlist personale</button></div>`:''}
+      <div class="radar-grid"><div class="metric"><span>Score</span><b>${gate.score}/100</b></div><div class="metric"><span>1h</span><b class="${cls(num(c.price_change_percentage_1h_in_currency))}">${fmtPct(c.price_change_percentage_1h_in_currency)}</b></div><div class="metric"><span>24h</span><b class="${cls(num(c.price_change_percentage_24h_in_currency))}">${fmtPct(c.price_change_percentage_24h_in_currency)}</b></div><div class="metric"><span>vs BTC</span><b class="${cls(num(gate.rel))}">${fmtPct(gate.rel)}</b></div></div>
+      <div class="spark">${sparkSVG(trend.values)}</div><div class="trend-caption">${esc(trendCaption(c,trend.mode))}</div>${decisionChecksHTML(gate.checks||[])}
+      <div class="radar-reason"><b>Lettura:</b> ${esc(dec.reason)}<br><b>Revolut:</b> ${platform.ok?'✓':'✕'} ${esc(platform.reason)}</div>
+      ${!owned?`<div class="opportunity-actions">${platform.ok?`<button class="mini-link danger-link" data-mark-unavailable="${esc(c.symbol)}">Non la trovo su Revolut</button>`:`<button class="mini-link" data-mark-available="${esc(c.symbol)}">La vedo su Revolut</button>`}</div>`:''}
     </article>`;
   }
 
@@ -1025,13 +1116,22 @@
     const st=stale?{...real,label:'DATI NON AGGIORNATI',tone:'observe',reason:'Attendi il ritorno live: il Radar non prende decisioni su dati vecchi.'}:real;
     const trend=trendValuesFor(c.id,c,'7d');
     const rec=state.opportunity?.autoTrack?.[c.id]||{};
-    const progress=real.readyNow?`${Math.min(2,Math.max(1,num(rec.streak)))}/2 conferme`:`monitorato automaticamente`;
+    const progress=real.readyNow?`${Math.min(2,Math.max(1,num(rec.streak)))}/2 conferme`:`score ${real.score}/100`;
     return `<article class="opportunity-card auto-candidate-card" data-open-asset="${esc(c.symbol)}">
       <div class="radar-top"><div><div class="radar-title">${esc(c.symbol)} · ${esc(c.name)}</div><div class="radar-sub">${index===0?'PRIORITÀ AUTOMATICA':'MONITORAGGIO AUTOMATICO'} · ${esc(progress)}</div></div><span class="status-pill ${st.tone}">${esc(st.label)}</span></div>
-      <div class="radar-grid"><div class="metric"><span>Prezzo</span><b>${fmtPrice(num(c.current_price))}</b></div><div class="metric"><span>1h</span><b class="${cls(num(c.price_change_percentage_1h_in_currency))}">${fmtPct(c.price_change_percentage_1h_in_currency)}</b></div><div class="metric"><span>24h</span><b class="${cls(num(c.price_change_percentage_24h_in_currency))}">${fmtPct(c.price_change_percentage_24h_in_currency)}</b></div><div class="metric"><span>vs BTC</span><b class="${cls(num(real.rel))}">${fmtPct(real.rel)}</b></div></div>
+      <div class="radar-grid"><div class="metric"><span>Score</span><b>${real.score}/100</b></div><div class="metric"><span>1h</span><b class="${cls(num(c.price_change_percentage_1h_in_currency))}">${fmtPct(c.price_change_percentage_1h_in_currency)}</b></div><div class="metric"><span>24h</span><b class="${cls(num(c.price_change_percentage_24h_in_currency))}">${fmtPct(c.price_change_percentage_24h_in_currency)}</b></div><div class="metric"><span>vs BTC</span><b class="${cls(num(real.rel))}">${fmtPct(real.rel)}</b></div></div>
       <div class="spark">${sparkSVG(trend.values)}</div><div class="trend-caption">${esc(trendCaption(c,trend.mode))}</div>${decisionChecksHTML(real.checks||[])}
-      <div class="radar-reason"><b>${esc(st.label)}:</b> ${esc(st.reason)}</div>
+      <div class="radar-reason"><b>${esc(st.label)}:</b> ${esc(st.reason)}<br><b>Rischio setup:</b> ${esc(real.risk)} · <b>Revolut:</b> ✓ ${esc(real.platform?.reason||'inclusa')}</div>
+      <div class="opportunity-actions"><button class="mini-link danger-link" data-mark-unavailable="${esc(c.symbol)}">Non la trovo su Revolut</button></div>
     </article>`;
+  }
+
+  function challengeEntryAmount(){
+    const cash=num(portfolioSnapshot().cash.base);
+    if(cash>=30) return 30;
+    if(cash>=20) return 20;
+    if(cash>=10) return 10;
+    return Math.max(0,Math.floor(cash));
   }
 
   function entryDecisionHero(stale=false){
@@ -1039,13 +1139,15 @@
     const tracked=(state.opportunity?.tracked||[]).map(x=>({...x,...(market[x.id]||{})}));
     const c=dec.candidateId?tracked.find(x=>x.id===dec.candidateId)||allRadarCandidates().find(x=>x.id===dec.candidateId):null;
     if(stale){
-      return `<div class="entry-decision-hero stale"><div class="entry-decision-label">DECISIONE INGRESSO</div><div class="entry-decision-main"><b>DATI NON AGGIORNATI</b><span class="status-pill observe">SOSPESO</span></div><p>Il Radar non emette ENTRA o ATTENDI finché i dati non tornano live.</p></div>`;
+      return `<div class="entry-decision-hero stale"><div class="entry-decision-label">MOTORE OPERATIVO</div><div class="entry-decision-main"><b>DATI NON AGGIORNATI</b><span class="status-pill observe">SOSPESO</span></div><p>Il Radar non propone ingressi finché i dati non tornano live.</p></div>`;
     }
     if(!c||dec.label==='NESSUN INGRESSO'){
-      return `<div class="entry-decision-hero no-entry"><div class="entry-decision-label">DECISIONE INGRESSO</div><div class="entry-decision-main"><b>NESSUN INGRESSO</b><span class="status-pill observe">NESSUN INGRESSO</span></div><p>${esc(dec.reason)}</p><small>È un risultato completo: non devi scegliere manualmente un candidato.</small></div>`;
+      return `<div class="entry-decision-hero no-entry"><div class="entry-decision-label">MOTORE OPERATIVO</div><div class="entry-decision-main"><b>NESSUN INGRESSO ORA</b><span class="status-pill observe">NESSUN INGRESSO</span></div><p>${esc(dec.reason)}</p><small>L’app continua da sola: non devi scegliere candidati né pulire liste.</small></div>`;
     }
     const st=autoCandidateDecision(c,state.opportunity?.autoTrack||{});
-    return `<div class="entry-decision-hero ${dec.label==='ENTRA'?'go':'wait'}" data-open-asset="${esc(c.symbol)}"><div class="entry-decision-label">DECISIONE INGRESSO · CANDIDATO FINALE</div><div class="entry-decision-main"><div><b>${esc(c.symbol)} · ${esc(c.name)}</b><small>${fmtPrice(num(c.current_price))} · 24h ${fmtPct(c.price_change_percentage_24h_in_currency)} · vs BTC ${fmtPct(st.rel)}</small></div><span class="status-pill ${dec.tone}">${esc(dec.label)}</span></div><p>${esc(dec.reason)}</p>${decisionChecksHTML(st.checks||[])}<small>L’app seleziona il candidato; l’eventuale ordine resta manuale su Revolut.</small></div>`;
+    const stake=challengeEntryAmount();
+    const entryExtra=dec.label==='ENTRA'&&stake>0?`<div class="entry-plan"><span>Taglia standard Challenge</span><b>${fmtEUR(stake)}</b><small>Scenario, non previsione: +10% ≈ ${fmtEUR(stake*.10)} · +20% ≈ ${fmtEUR(stake*.20)} prima delle commissioni.</small></div>`:'';
+    return `<div class="entry-decision-hero ${dec.label==='ENTRA'?'go':'wait'}" data-open-asset="${esc(c.symbol)}"><div class="entry-decision-label">MOTORE OPERATIVO · CANDIDATO FINALE</div><div class="entry-decision-main"><div><b>${esc(c.symbol)} · ${esc(c.name)}</b><small>${fmtPrice(num(c.current_price))} · Score ${st.score}/100 · rischio setup ${esc(st.risk)}</small></div><span class="status-pill ${dec.tone}">${esc(dec.label)}</span></div><p>${esc(dec.reason)}</p>${decisionChecksHTML(st.checks||[])}${entryExtra}<div class="decision-guard"><b>Quando il segnale non vale più:</b> ${esc(st.invalidation)}</div><div class="decision-platform"><b>Revolut:</b> ✓ ${esc(st.platform?.reason||'inclusa nell’universo operativo')}</div><div class="opportunity-actions"><button class="mini-link danger-link" data-mark-unavailable="${esc(c.symbol)}">Non la trovo su Revolut</button></div><small>L’app seleziona e legge i dati; l’ordine resta sempre manuale.</small></div>`;
   }
 
   function renderRadar(){
@@ -1065,13 +1167,13 @@
     };
 
     const proposalsPanel=`
-      <div class="section-title radar-panel-title"><div><h2>Radar automatico</h2><p>L’app cerca, segue e scarta i candidati senza obbligarti a scegliere una Watchlist.</p></div><div class="right"><button class="chip-btn" data-action="scan-opportunities">◎ Scansiona</button></div></div>
+      <div class="section-title radar-panel-title"><div><h2>Motore operativo</h2><p>Analizza solo l’universo Revolut, assegna uno score unico e porta davanti un solo candidato finale.</p></div><div class="right"><button class="chip-btn" data-action="scan-opportunities">◎ Scansiona</button></div></div>
       ${stale?`<div class="radar-stale-warning"><b>Dati non aggiornati:</b> la decisione operativa è sospesa finché non torna il live.</div>`:''}
-      <div class="radar-flow"><b>Flusso automatico:</b> mercato → filtri → monitoraggio nel tempo → eliminazione dei candidati deboli → <b>ENTRA / ATTENDI / NESSUN INGRESSO</b>.</div>
+      <div class="radar-flow"><b>Flusso RC9:</b> universo Revolut → liquidità minima → score 0–100 → conferma temporale → pulizia automatica → <b>ENTRA / ATTENDI / NESSUN INGRESSO</b>.</div>
       ${entryDecisionHero(stale)}
       <details class="auto-monitor-hub" ${tracked.length?'open':''}><summary>Candidati seguiti automaticamente <span>${tracked.length}</span></summary><div class="auto-monitor-body"><p class="muted small">Non devi aggiungerli tu. Se perdono i requisiti spariscono alla scansione successiva; se li recuperano possono rientrare.</p><div class="opportunity-list">${tracked.length?tracked.slice(0,5).map((c,i)=>autoCandidateCard(c,{index:i,stale})).join(''):'<div class="empty">Nessun candidato abbastanza valido da seguire in questo momento.</div>'}</div></div></details>
       <details class="radar-lookup-wrap"><summary>Controlla manualmente una crypto</summary><div class="radar-lookup"><div><b>Controllo puntuale</b><span>Serve solo per curiosità o verifica. Non è necessario per far funzionare il Radar automatico.</span></div><div class="radar-lookup-row"><input id="radarLookupInput" type="search" placeholder="es. NEAR, PYTH, MEW"><button class="chip-btn" data-action="radar-lookup">Analizza</button></div><div id="radarLookupResult"></div></div></details>
-      <details class="radar-diagnostics"><summary>Copertura e diagnostica Radar</summary><div class="radar-diagnostics-grid"><span>Universo letto <b>${Number.isFinite(stats.rows)?stats.rows:'—'}</b></span><span>Filtrati validi <b>${Number.isFinite(stats.eligible)?stats.eligible:'—'}</b></span><span>Approfonditi <b>${Number.isFinite(stats.screened)?stats.screened:'—'}</b></span><span>Segnali trovati <b>${Number.isFinite(stats.assessed)?stats.assessed:'—'}</b></span><span>Monitorati <b>${tracked.length}</b></span><span>Fonte <b>${esc(marketSource)}</b></span></div><p>La lista operativa viene ricostruita a ogni scansione: non conserva candidati che hanno perso i requisiti.</p></details>
+      <details class="radar-diagnostics"><summary>Copertura e diagnostica Radar</summary><div class="radar-diagnostics-grid"><span>Mercato letto <b>${Number.isFinite(stats.rows)?stats.rows:'—'}</b></span><span>Universo Revolut <b>${Number.isFinite(stats.platformEligible)?stats.platformEligible:'—'}</b></span><span>Liquidità minima <b>${Number.isFinite(stats.eligible)?stats.eligible:'—'}</b></span><span>Valutati <b>${Number.isFinite(stats.assessed)?stats.assessed:'—'}</b></span><span>Monitorati <b>${tracked.length}</b></span><span>Esclusi da te <b>${Number.isFinite(stats.blockedManual)?stats.blockedManual:(state.platform?.unavailableSymbols||[]).length}</b></span><span>Confermati da te <b>${(state.platform?.confirmedSymbols||[]).length}</b></span><span>Fonte <b>${esc(marketSource)}</b></span></div><p>Solo gli asset compatibili con l’universo Revolut interno possono arrivare a ENTRA. Se segnali un asset come non disponibile, viene escluso dalle scansioni future.</p>${(state.platform?.unavailableSymbols||[]).length?`<button class="chip-btn" data-action="reset-platform-blocks">Riattiva esclusi Revolut</button>`:''}</details>
       <details class="signal-hub"><summary>Cosa sarebbe successo? <span>${activeSignals.length} attivi</span></summary><div class="signal-hub-body"><p class="muted small">Verifica didattica dei segnali salvati, senza dover comprare.</p><div class="signal-list">${activeSignals.length?activeSignals.map(signalCard).join(''):'<div class="empty">Nessun segnale attivo.</div>'}</div>${archivedSignals.length?`<details class="signal-archive"><summary>Archivio segnali conclusi <span>${archivedSignals.length}</span></summary><div class="signal-list archive-list">${archivedSignals.map(signalCard).join('')}</div></details>`:''}</div></details>`;
 
     const watchRank={'FORTE':6,'IN MIGLIORAMENTO':5,'NEUTRALE':4,'TROPPO ESTESA':3,'DEBOLE':2,'SOLO OSSERVAZIONE':1};
@@ -1154,7 +1256,7 @@
     const c=dec.candidateId?tracked.find(x=>x.id===dec.candidateId)||allRadarCandidates().find(x=>x.id===dec.candidateId):null;
     const st=c?autoCandidateDecision(c,state.opportunity?.autoTrack||{}):{label:'NESSUN INGRESSO',tone:'observe',reason:dec.reason,checks:[],rel:0};
     const rank={'ENTRA':100,'ATTENDI':72,'NESSUN INGRESSO':12};
-    return {key:'entry:decision',type:'entry',symbol:c?.symbol||'RADAR',name:c?.name||'Nessun candidato operativo',id:c?.id||'',label:dec.label,tone:dec.tone||st.tone,reason:dec.reason||st.reason,checks:st.checks||[],priority:rank[dec.label]||12,price:num(c?.current_price),h:num(c?.price_change_percentage_1h_in_currency),d:num(c?.price_change_percentage_24h_in_currency),w:num(c?.price_change_percentage_7d_in_currency),rel:num(st.rel)};
+    return {key:'entry:decision',type:'entry',symbol:c?.symbol||'RADAR',name:c?.name||'Nessun candidato operativo',id:c?.id||'',label:dec.label,tone:dec.tone||st.tone,reason:dec.reason||st.reason,checks:st.checks||[],priority:rank[dec.label]||12,score:num(st.score),risk:st.risk||'',price:num(c?.current_price),h:num(c?.price_change_percentage_1h_in_currency),d:num(c?.price_change_percentage_24h_in_currency),w:num(c?.price_change_percentage_7d_in_currency),rel:num(st.rel)};
   }
 
   function buildAssistantItems(){
@@ -1208,6 +1310,7 @@
   function assistantMeta(it){
     if(it.type==='position') return `P/L ${fmtEUR(it.pnl)} · ${fmtPct(it.pct)}${Number.isFinite(it.pullback)?` · dal max −${num(it.pullback).toFixed(1)} pt`:''}`;
     if(it.type==='entry'&&it.symbol==='RADAR') return 'Nessun candidato operativo selezionato';
+    if(it.type==='entry') return `Score ${num(it.score)}/100 · rischio setup ${it.risk||'—'} · 24h ${fmtPct(it.d)} · vs BTC ${fmtPct(it.rel)}`;
     return `1h ${fmtPct(it.h)} · 24h ${fmtPct(it.d)} · 7g ${fmtPct(it.w)} · vs BTC ${fmtPct(it.rel)}`;
   }
 
@@ -1234,13 +1337,13 @@
     const shownItems=fresh?items:items.map(it=>it.type==='entry'?{...it,label:'SOSPESO',tone:'observe',reason:'Dati non aggiornati: attendi il ritorno live prima di usare la decisione ingresso.'}:it);
     const tracked=(state.opportunity?.tracked||[]).length;
     const entryText=!fresh?'Dati non abbastanza freschi: decisione ingresso sospesa.':`${entryItem.label}${entryItem.symbol&&entryItem.symbol!=='RADAR'?` · ${entryItem.symbol}`:''}. ${entryItem.reason}`;
-    return `<div class="assistant-live ${fresh?'live':'stale'}"><div><span class="assistant-live-dot"></span><b>Auto-lettura ${fresh?'attiva':'in attesa dati'}</b><small>Prezzi ogni 5 minuti · Radar completo ogni 15 minuti · ultima analisi ${assistantTime(a.time)}</small></div><button class="chip-btn" data-action="assistant-refresh">Aggiorna & analizza</button></div>
+    return `<div class="assistant-live ${fresh?'live':'stale'}"><div><span class="assistant-live-dot"></span><b>Auto-lettura ${fresh?'attiva':'in attesa dati'}</b><small>Prezzi e motore operativo ogni 5 minuti · ultima analisi ${assistantTime(a.time)}</small></div><button class="chip-btn" data-action="assistant-refresh">Aggiorna & analizza</button></div>
       <div class="assistant-summary"><div class="lesson-tag">DECISIONE INGRESSO</div><p>${esc(entryText)}</p><div class="assistant-summary-grid"><span>Liquidità Base <b>${fmtEUR(snap.cash.base)}</b></span><span>Posizioni <b>${positionItems.length}</b></span><span>Monitorati Radar <b>${tracked}</b></span><span>Watchlist personale <b>${watchItems.length}</b></span><span>Fonte <b>${esc(marketSource)}</b></span></div></div>
       <div class="assistant-explain"><b>Come lavora adesso:</b> il Radar seleziona e segue i candidati automaticamente. Se perdono i requisiti vengono rimossi dalla lista operativa. L’esito finale è soltanto <b>ENTRA</b>, <b>ATTENDI</b> o <b>NESSUN INGRESSO</b>. La Watchlist non serve più per ottenere conferme.</div>
       <div class="section-title compact-section"><div><h2>Lettura automatica</h2><p>Decisione ingresso + gestione delle posizioni già aperte</p></div></div>
       <div class="assistant-list">${shownItems.length?shownItems.map(assistantItemHTML).join(''):'<div class="training-empty"><b>Niente da analizzare.</b><span>Il Radar continuerà comunque a cercare automaticamente.</span></div>'}</div>
       <details class="assistant-log"><summary>Cambi di stato <span>${(state.assistant?.log||[]).length}</span></summary><div class="assistant-log-body">${assistantLogHTML()}</div></details>
-      <div class="assistant-limit"><b>Limite tecnico:</b> mentre l’app è aperta può aggiornare i prezzi ogni 5 minuti e il Radar ogni 15. Android può sospenderla in background; alla riapertura viene eseguito un nuovo controllo.</div>`;
+      <div class="assistant-limit"><b>Limite tecnico:</b> mentre l’app è aperta aggiorna prezzi e motore operativo ogni 5 minuti. Android può sospenderla in background; alla riapertura viene eseguito un nuovo controllo.</div>`;
   }
 
 
@@ -1253,7 +1356,7 @@
     {title:'Volume',text:'Un movimento sostenuto da scambi attivi è più credibile di uno con volume debole. Per questo il volume può bloccare una conferma.'},
     {title:'Forza rispetto a BTC',text:'Confronta la crypto con Bitcoin. Se la crypto sale più di BTC, mostra forza relativa; se resta indietro, il segnale è meno convincente.'},
     {title:'Estensione',text:'Una crypto può essere forte ma già troppo salita. In quel caso il rischio è rincorrere il prezzo: NON ENTRARE ORA non significa smettere di seguirla.'},
-    {title:'Decisione ingresso',text:'Il Radar automatico segue i candidati da solo. ENTRA richiede requisiti tutti verdi e due conferme distanziate nel tempo; ATTENDI indica cosa manca; NESSUN INGRESSO è un risultato valido.'},
+    {title:'Decisione ingresso',text:'Il motore usa uno score complessivo 0–100. Da 58 segue il candidato; da 72, se supera i vincoli di trend, volume, forza vs BTC e disponibilità Revolut, può arrivare a ENTRA dopo due conferme distanziate nel tempo.'},
     {title:'Massimo P/L e ritracciamento',text:'Per una posizione aperta conta non solo il profitto attuale, ma anche quanto ha restituito rispetto al massimo raggiunto durante la challenge.'},
     {title:'Semaforo posizione',text:'MANTIENI, IN PROFITTO, CONTROLLA PROFITTO, VALUTA PRESA PROFITTO e ATTENZIONE combinano P/L, trend, forza vs BTC e ritracciamento.'},
     {title:'Cosa sarebbe successo?',text:'Salva un segnale senza comprare e controlla dopo 24h/48h. Serve per misurare il metodo senza rischiare soldi ogni volta.'}
@@ -1399,13 +1502,45 @@
     bindDynamic();
   }
 
+  function markAvailableSymbol(symbol){
+    const sym=String(symbol||'').toUpperCase();
+    if(!sym) return;
+    if(!confirm(`Confermi che ${sym} è acquistabile nel tuo Revolut?\n\nLa aggiungo all'universo operativo personale.`)) return;
+    checkpointState(`Conferma Revolut ${sym}`);
+    state.platform={...defaultState().platform,...(state.platform||{})};
+    state.platform.confirmedSymbols=[...new Set([...(state.platform.confirmedSymbols||[]),sym])];
+    state.platform.unavailableSymbols=(state.platform.unavailableSymbols||[]).filter(x=>String(x).toUpperCase()!==sym);
+    state.opportunity={...state.opportunity,time:0,entryDecision:null};
+    saveState(); renderAll(); toast(`${sym} confermata su Revolut · nuova scansione`); scanOpportunities(true);
+  }
+
+  function markUnavailableSymbol(symbol){
+    const sym=String(symbol||'').toUpperCase();
+    if(!sym) return;
+    if(!confirm(`${sym} non è disponibile nel tuo Revolut?\n\nLa escludo dal motore operativo e cerco subito un altro candidato.`)) return;
+    checkpointState(`Esclusione Revolut ${sym}`);
+    state.platform={...defaultState().platform,...(state.platform||{})};
+    state.platform.unavailableSymbols=[...new Set([...(state.platform.unavailableSymbols||[]),sym])];
+    state.platform.confirmedSymbols=(state.platform.confirmedSymbols||[]).filter(x=>String(x).toUpperCase()!==sym);
+    const opp=state.opportunity||defaultState().opportunity;
+    const keep=x=>String(x?.symbol||'').toUpperCase()!==sym;
+    const autoTrack={...(opp.autoTrack||{})};
+    Object.keys(autoTrack).forEach(id=>{if(String(autoTrack[id]?.symbol||'').toUpperCase()===sym) delete autoTrack[id];});
+    state.opportunity={...opp,candidates:(opp.candidates||[]).filter(keep),secondary:(opp.secondary||[]).filter(keep),tracked:(opp.tracked||[]).filter(keep),autoTrack,entryDecision:null,time:0};
+    saveState(); renderAll(); toast(`${sym} esclusa · cerco un altro candidato`);
+    scanOpportunities(true);
+  }
+
   function bindDynamic(){
-    $$('[data-open-asset]').forEach(el=>el.addEventListener('click',e=>{ if(e.target.closest('[data-remove-watch-id],[data-watch-candidate]')) return; openAsset(el.dataset.openAsset); }));
+    $$('[data-open-asset]').forEach(el=>el.addEventListener('click',e=>{ if(e.target.closest('[data-remove-watch-id],[data-watch-candidate],[data-mark-unavailable],[data-mark-available]')) return; openAsset(el.dataset.openAsset); }));
     $$('[data-action="new-op"]').forEach(b=>b.addEventListener('click',()=>openOpSheet()));
     $$('[data-action="add-watch"]').forEach(b=>b.addEventListener('click',openWatchSheet));
     $$('[data-remove-watch-id]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation(); checkpointState('Modifica watchlist'); state.watchlistIds=(state.watchlistIds||[]).filter(x=>x!==b.dataset.removeWatchId); if(state.decision?.watchConfirm) delete state.decision.watchConfirm[b.dataset.removeWatchId]; saveState(); renderAll(); toast('Rimosso dalla watchlist');}));
     $$('[data-watch-candidate]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation(); addWatchById(b.dataset.watchCandidate); }));
+    $$('[data-mark-unavailable]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();markUnavailableSymbol(b.dataset.markUnavailable);}));
+    $$('[data-mark-available]').forEach(b=>b.addEventListener('click',e=>{e.stopPropagation();markAvailableSymbol(b.dataset.markAvailable);}));
     $$('[data-action="scan-opportunities"]').forEach(b=>b.addEventListener('click',()=>scanOpportunities(true)));
+    $$('[data-action="reset-platform-blocks"]').forEach(b=>b.addEventListener('click',()=>{if(!confirm('Riattivare tutti gli asset che avevi segnato come non disponibili su Revolut?'))return;state.platform={...defaultState().platform,...(state.platform||{}),unavailableSymbols:[]};state.opportunity={...state.opportunity,time:0,entryDecision:null};saveState();renderAll();scanOpportunities(true);toast('Esclusioni Revolut azzerate');}));
     $$('[data-action="radar-lookup"]').forEach(b=>b.addEventListener('click',runRadarLookup));
     $('#radarLookupInput')?.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();runRadarLookup();}});
     $$('[data-radar-tab]').forEach(b=>b.addEventListener('click',()=>{state.ui={...(state.ui||{}),radarTab:b.dataset.radarTab};saveState();renderAll();}));
@@ -1420,7 +1555,7 @@
     $$('[data-action="new-challenge"]').forEach(b=>b.addEventListener('click',openChallengeSheet));
     $$('[data-action="reset"]').forEach(b=>b.addEventListener('click',resetState));
     $$('[data-assistant-tab]').forEach(b=>b.addEventListener('click',()=>{state.ui={...(state.ui||{}),assistantTab:b.dataset.assistantTab};saveState();renderAll();window.scrollTo({top:0,behavior:'smooth'});}));
-    $$('[data-action="assistant-refresh"]').forEach(b=>b.addEventListener('click',async()=>{b.disabled=true;b.textContent='analizzo…';apiBackoffUntil=0;await refreshMarket(true);runAutoAnalysis('manuale',true);renderAll();toast('Auto-analisi aggiornata');}));
+    $$('[data-action="assistant-refresh"]').forEach(b=>b.addEventListener('click',async()=>{b.disabled=true;b.textContent='analizzo…';apiBackoffUntil=0;const ok=await refreshMarket(true);if(ok)await scanOpportunities(true);runAutoAnalysis('manuale',true);renderAll();toast('Motore operativo aggiornato');}));
     $$('[data-training-tab]').forEach(b=>b.addEventListener('click',()=>{state.ui={...(state.ui||{}),trainingTab:b.dataset.trainingTab};saveState();renderAll();window.scrollTo({top:0,behavior:'smooth'});}));
     $$('.training-scenario').forEach(card=>{
       card.querySelectorAll('[data-training-choice]').forEach(btn=>btn.addEventListener('click',()=>{card.querySelectorAll('[data-training-choice]').forEach(x=>x.classList.toggle('selected',x===btn));card.dataset.selected=btn.dataset.trainingChoice;}));
@@ -1704,6 +1839,12 @@
     const err=validateOp(op,$('#opId').value||null); if(err){toast(err);return;}
     checkpointState($('#opId').value?'Prima di modificare operazione':'Prima di nuova operazione');
     const idx=state.ops.findIndex(o=>o.id===id); if(idx>=0) state.ops[idx]=op; else state.ops.push(op);
+    if(op.type==='BUY'&&op.symbol){
+      state.platform={...defaultState().platform,...(state.platform||{})};
+      const sym=String(op.symbol).toUpperCase();
+      state.platform.confirmedSymbols=[...new Set([...(state.platform.confirmedSymbols||[]),sym])];
+      state.platform.unavailableSymbols=(state.platform.unavailableSymbols||[]).filter(x=>String(x).toUpperCase()!==sym);
+    }
     saveState(); closeSheets(); renderAll();
     if(op.type==='SELL'){
       const snap=portfolioSnapshot();
@@ -1854,23 +1995,24 @@
       const prev=opp.prev||{};
       const snap=portfolioSnapshot();
       const ownedSymbols=new Set(snap.positions.map(p=>String(p.symbol).toUpperCase()));
-      const eligible=rows.filter(x=>String(x.symbol).toUpperCase()!=='BTC'&&!ownedSymbols.has(String(x.symbol).toUpperCase())&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&!isExcludedRadarAsset(x)&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000&&(num(x.market_cap)>=20_000_000||num(x.total_volume)>=8_000_000));
-      const noTrending=new Set();
-      const screened=eligible.map(x=>screenOpportunity(x,btc,prev[x.id],noTrending)).sort((a,b)=>b._screenScore-a._screenScore||num(b.total_volume)-num(a.total_volume)).slice(0,42);
-      const assessed=screened.map(x=>analyzeOpportunity(x,btc,prev[x.id],noTrending)).filter(Boolean);
-      assessed.sort((a,b)=>{const rank={'POSSIBILE INGRESSO':4,PREPARATI:3,INTERESSANTE:3,OSSERVA:2,'NON INSEGUIRE':1};return ((rank[b.status]||0)-(rank[a.status]||0))||(b.score-a.score)||(num(b.total_volume)-num(a.total_volume));});
-      const valid=assessed.filter(x=>x.status!=='NON INSEGUIRE'&&!isExcludedRadarAsset(x));
-      const primaryPool=valid.length?valid:[];
-      const candidates=primaryPool.slice(0,3);
+      const platformRows=rows.filter(x=>revolutEligibility(x).ok);
+      const eligible=platformRows.filter(x=>String(x.symbol).toUpperCase()!=='BTC'&&!ownedSymbols.has(String(x.symbol).toUpperCase())&&!STABLE_SYMBOLS.has(String(x.symbol||'').toUpperCase())&&!isExcludedRadarAsset(x)&&num(x.current_price)>0&&num(x.total_volume)>=2_000_000&&(num(x.market_cap)>=20_000_000||num(x.total_volume)>=8_000_000));
+      const assessed=eligible.map(x=>{
+        const q=operationalScore(x,btc,prev[x.id]);
+        const status=q.readyNow?'POSSIBILE INGRESSO':q.promising?'INTERESSANTE':'OSSERVA';
+        return {...x,symbol:String(x.symbol||'').toUpperCase(),status,tone:candidateTone(status),score:q.score,rel24:q.rel,volRatio:q.volRatio,volDelta:q.volDelta,scanMove:q.scanMove,reason:q.strengths.slice(0,4).join(' · ')||`score operativo ${q.score}/100`,_operational:q};
+      }).sort((a,b)=>num(b.score)-num(a.score)||num(b.rel24)-num(a.rel24)||num(b.total_volume)-num(a.total_volume));
+      const valid=assessed.filter(x=>{const q=x._operational||operationalScore(x,btc,prev[x.id]);return q.promising||q.readyNow;});
+      const candidates=valid.slice(0,3);
       const candidateIds=new Set(candidates.map(x=>x.id));
       const secondary=valid.filter(x=>!candidateIds.has(x.id)).slice(0,7);
-      const tracked=valid.filter(c=>{const g=autoEntryGate(c,btc);return g.promising||g.readyNow;}).sort((a,b)=>{const ga=autoEntryGate(a,btc),gb=autoEntryGate(b,btc);return Number(gb.readyNow)-Number(ga.readyNow)||(gb.missing?.length||0)-(ga.missing?.length||0)||num(b.score)-num(a.score)||num(b.rel24)-num(a.rel24);}).slice(0,12);
+      const tracked=valid.slice(0,12);
       const autoTrack=updateAutoCandidateTracking(tracked,opp.autoTrack||{});
       const entryDecision=computeEntryDecision(tracked,autoTrack);
       const now=Date.now(),nextPrev={};
       rows.slice(0,2000).forEach(x=>nextPrev[x.id]={time:now,volume:num(x.total_volume),price:num(x.current_price)});
       updateSignalOutcomes(rows);
-      const stats={rows:rows.length,eligible:eligible.length,screened:screened.length,assessed:assessed.length,valid:valid.length,tracked:tracked.length,time:now};
+      const stats={rows:rows.length,platformEligible:platformRows.length,eligible:eligible.length,screened:eligible.length,assessed:assessed.length,valid:valid.length,tracked:tracked.length,blockedManual:(state.platform?.unavailableSymbols||[]).length,time:now};
       state.opportunity={...opp,time:now,candidates,secondary,tracked,autoTrack,entryDecision,prev:nextPrev,trending:[],trendingAt:now,signals:state.opportunity.signals||[],stats};
       recordOpportunitySignals(candidates);
       allRadarCandidates().forEach(c=>market[c.id]={...market[c.id],...c});
@@ -1958,7 +2100,7 @@
     renderAll(); showView(state.ui.lastView||'home');
     $$('.nav-btn[data-view]').forEach(b=>b.addEventListener('click',()=>showView(b.dataset.view)));
     $('.nav-main').addEventListener('click',()=>openOpSheet());
-    $('#refreshBtn').addEventListener('click',async()=>{apiBackoffUntil=0;const ok=await refreshMarket(true);if(ok)setTimeout(()=>scanOpportunities(false),8000);});
+    $('#refreshBtn').addEventListener('click',async()=>{apiBackoffUntil=0;const ok=await refreshMarket(true);if(ok)await scanOpportunities(true);});
     $('#sheetBackdrop').addEventListener('click',closeSheets); $$('[data-close-sheet]').forEach(b=>b.addEventListener('click',closeSheets));
     $('#opType').addEventListener('change',updateOpFields); $('#opAccount').addEventListener('change',updateOpFields); $('#opAsset').addEventListener('change',updateOpFields); $('#opQty').addEventListener('input',updateSalePreview); $('#opAmount').addEventListener('input',updateSalePreview); $('#opFee').addEventListener('input',updateSalePreview); $('#opForm').addEventListener('submit',saveOperation); $('#noteForm').addEventListener('submit',saveNote); $('#challengeForm').addEventListener('submit',saveChallenge);
     $('#watchSearch').addEventListener('input',e=>{clearTimeout(watchSearchTimer);const q=e.target.value;watchSearchTimer=setTimeout(()=>searchWatch(q),350);});

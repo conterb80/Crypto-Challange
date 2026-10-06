@@ -145,3 +145,11 @@ button,input,select,textarea{font:inherit}.app-shell{max-width:760px;margin:0 au
 .auto-monitor-hub>summary,.radar-lookup-wrap>summary{list-style:none;padding:13px 14px;cursor:pointer;font-size:11px;font-weight:900;color:#dce6f5}.auto-monitor-hub>summary::-webkit-details-marker,.radar-lookup-wrap>summary::-webkit-details-marker{display:none}.auto-monitor-hub>summary span{float:right;color:#7f91ac}.auto-monitor-body{padding:0 10px 10px}
 .auto-candidate-card .radar-sub{color:#8fa2bd}.auto-candidate-card .status-pill{min-width:72px;justify-content:center}
 @media(max-width:520px){.entry-decision-main{align-items:flex-start}.entry-decision-main b{font-size:18px}.entry-decision-main .status-pill{font-size:9px}.entry-decision-hero{padding:14px}}
+
+/* RC9 · Motore operativo */
+.entry-plan{display:grid;grid-template-columns:1fr auto;gap:2px 12px;align-items:center;margin-top:11px;padding:10px 12px;border:1px solid rgba(109,224,164,.22);background:rgba(109,224,164,.06);border-radius:14px}
+.entry-plan span{font-size:10px;color:#93a5bd;font-weight:800}.entry-plan b{font-size:17px}.entry-plan small{grid-column:1/-1;color:#8392aa;font-size:9px;margin-top:2px}
+.decision-guard,.decision-platform{margin-top:9px;padding:9px 11px;border-radius:13px;background:rgba(126,151,191,.07);border:1px solid rgba(126,151,191,.12);font-size:10.5px;line-height:1.45;color:#aebdd1}
+.decision-guard b,.decision-platform b{color:#dbe5f3}.decision-platform{background:rgba(83,215,232,.055);border-color:rgba(83,215,232,.14)}
+.opportunity-actions .danger-link{color:#ffbe86;border-color:rgba(255,168,96,.22);background:rgba(255,168,96,.06)}
+.entry-decision-hero .opportunity-actions{justify-content:flex-start}
